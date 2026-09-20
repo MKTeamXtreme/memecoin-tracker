@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+venv/
+env/
+.env
+# Note: We ignore the database file so your git repository doesn't get clogged with constant database updates.
+data/*.db

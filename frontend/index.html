@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Solana Memecoin Tracker — Trial Run</title>
+  <meta name="description" content="Live Solana memecoin discovery and prediction accuracy tracker — trial run dashboard." />
+  <link rel="stylesheet" href="/static/style.css?v=2" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<!-- ── Header ──────────────────────────────────────────────────────────── -->
+<header>
+  <div class="logo">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+      <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"></polyline>
+      <polyline points="16 7 22 7 22 13"></polyline>
+    </svg>
+    <span>Solana Memecoin Tracker</span>
+    <div class="live-dot" id="live-dot"></div>
+    <span style="font-size:11px;color:var(--text-muted);font-weight:400">TRIAL RUN</span>
+  </div>
+
+  <div class="header-stats">
+    <div class="hstat">
+      <div class="hstat-value" id="h-total">0</div>
+      <div class="hstat-label">Total Tracked</div>
+    </div>
+    <div class="hstat">
+      <div class="hstat-value" id="h-today">0</div>
+      <div class="hstat-label">Today</div>
+    </div>
+    <div class="hstat">
+      <div class="hstat-value" id="h-winrate" style="color:var(--success)">—</div>
+      <div class="hstat-label">2x Win Rate</div>
+    </div>
+  </div>
+
+  <div class="conn-badge" id="conn-badge">
+    <div class="live-dot offline" id="conn-dot"></div>
+    <span id="conn-text">Connecting…</span>
+  </div>
+</header>
+
+<!-- ── App Body ─────────────────────────────────────────────────────────── -->
+<div class="app-body">
+
+  <!-- Sidebar: Live Feed -->
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <span class="sidebar-title">🔴 Live Feed</span>
+      <span class="coin-count-badge" id="feed-count">0 coins</span>
+    </div>
+    <div class="feed" id="feed">
+      <div class="empty-state" id="feed-empty">
+        <div class="icon">🔍</div>
+        <p>Scanning Pump.fun for new tokens…<br/>Coins scoring 35+ will appear here.</p>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main Panel -->
+  <main class="main">
+
+    <!-- Stat Cards -->
+    <div class="stat-row">
+      <div class="stat-card">
+        <div class="stat-label">Coins w/ Outcomes</div>
+        <div class="stat-value purple" id="s-with-outcomes">0</div>
+        <div class="stat-sub">price data collected</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">70+ Score → 2x Win%</div>
+        <div class="stat-value green" id="s-high-win">—</div>
+        <div class="stat-sub">top tier signals</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Avg Peak Mult (70+)</div>
+        <div class="stat-value amber" id="s-avg-mult">—</div>
+        <div class="stat-sub">average multiplier</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Tracking Active</div>
+        <div class="stat-value" id="s-tracking" style="font-size:14px;color:var(--success)">✓ Live</div>
+        <div class="stat-sub">🔍 New coins every 15s</div>
+        <div class="stat-sub">📊 Outcomes every 5min</div>
+      </div>
+    </div>
+
+    <!-- Accuracy Section -->
+    <div class="accuracy-section">
+      <!-- Chart -->
+      <div class="chart-card" style="max-width:260px;">
+        <h3>📊 2x Win Rate by Score</h3>
+        <div class="chart-wrapper">
+          <canvas id="win-chart"></canvas>
+        </div>
+      </div>
+
+      <!-- Bracket breakdown -->
+      <div class="chart-card" style="flex:1;">
+        <h3>🎯 Score Bracket Accuracy</h3>
+        <div class="bracket-cards" id="brackets">
+          <div class="bracket-row">
+            <span class="bracket-label">70–100 🔥</span>
+            <div class="bracket-bar-wrap"><div class="bracket-bar high" style="width:0%" id="bar-high"></div></div>
+            <span class="bracket-stat" id="bs-high">No data yet</span>
+          </div>
+          <div class="bracket-row">
+            <span class="bracket-label">50–69 ⚡</span>
+            <div class="bracket-bar-wrap"><div class="bracket-bar mid" style="width:0%" id="bar-mid"></div></div>
+            <span class="bracket-stat" id="bs-mid">No data yet</span>
+          </div>
+          <div class="bracket-row">
+            <span class="bracket-label">35–49 🔻</span>
+            <div class="bracket-bar-wrap"><div class="bracket-bar low" style="width:0%" id="bar-low"></div></div>
+            <span class="bracket-stat" id="bs-low">No data yet</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- History Table -->
+    <div class="table-section">
+      <div class="table-header-row">
+        <span class="table-title">📋 Prediction History</span>
+        <span style="font-size:10px;color:var(--text-muted)">Updates every 5 minutes via DexScreener</span>
+      </div>
+      <div class="table-wrap">
+        <table id="history-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Token</th>
+              <th>Score</th>
+              <th>Entry MC</th>
+              <th>1min MC</th>
+              <th>5min MC</th>
+              <th>15min MC</th>
+              <th>1hr MC</th>
+              <th>Peak MC</th>
+              <th>Peak Mult</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="history-body">
+            <tr>
+              <td colspan="10" style="text-align:center;padding:24px;color:var(--text-muted)">
+                Waiting for first coin detections…
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- Toast container -->
+<div id="toast-container"></div>
+
+<script src="/static/app.js?v=2"></script>
+</body>
+</html>
