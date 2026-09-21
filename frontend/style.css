@@ -363,6 +363,40 @@ header {
 .bracket-bar.low  { background: linear-gradient(90deg, var(--danger), #fb7185); }
 .bracket-stat { font-size: 11px; font-family: var(--mono); color: var(--text-dim); min-width: 60px; text-align: right; }
 
+/* Tabs & Search */
+.table-tabs { display: flex; gap: 8px; }
+.tab-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .7px;
+  padding: 6px 12px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: all .2s;
+}
+.tab-btn:hover { color: var(--text); background: rgba(255,255,255,.03); }
+.tab-btn.active { color: var(--primary); background: var(--primary-dim); border: 1px solid var(--primary-glow); }
+
+.table-controls { display: flex; align-items: center; gap: 12px; }
+.update-hint { font-size: 10px; color: var(--text-muted); }
+.search-input {
+  background: rgba(0,0,0,.3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  color: var(--text);
+  font-size: 11px;
+  font-family: var(--font);
+  width: 180px;
+  transition: border-color .2s, width .2s;
+}
+.search-input:focus { outline: none; border-color: var(--primary); width: 220px; }
+.search-input::placeholder { color: var(--text-muted); }
+
 /* History Table */
 .table-section {
   flex: 1;

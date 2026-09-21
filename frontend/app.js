@@ -10,6 +10,20 @@ let stats     = {};
 let winChart  = null;
 let ws        = null;
 const MAX_FEED = 60;     // max cards in live feed
+let currentTab = 'history';
+let searchQuery = '';
+
+function switchTab(tab) {
+  currentTab = tab;
+  document.getElementById('tab-history').classList.toggle('active', tab === 'history');
+  document.getElementById('tab-winners').classList.toggle('active', tab === 'winners');
+  renderTable(allCoins);
+}
+
+function handleSearch() {
+  searchQuery = document.getElementById('coin-search').value.toLowerCase();
+  renderTable(allCoins);
+}
 
 // ── Copy contract address to clipboard ───────────────────────────────────────
 function copyAddr(addr, el) {
@@ -160,13 +174,31 @@ function addToFeed(coin) {
 
 // ── History Table ─────────────────────────────────────────────────────────
 function renderTable(coins) {
+  let displayCoins = [...(coins || [])];
+
+  if (searchQuery) {
+    displayCoins = displayCoins.filter(c => 
+      (c.name || '').toLowerCase().includes(searchQuery) ||
+      (c.symbol || '').toLowerCase().includes(searchQuery) ||
+      (c.mint || '').toLowerCase().includes(searchQuery)
+    );
+  }
+
+  if (currentTab === 'winners') {
+    displayCoins = displayCoins.filter(c => c.peak_mc && c.initial_mc && c.initial_mc > 0);
+    displayCoins.sort((a, b) => (b.peak_mc / b.initial_mc) - (a.peak_mc / a.initial_mc));
+    displayCoins = displayCoins.slice(0, 50);
+  } else {
+    displayCoins = displayCoins.slice(0, 100);
+  }
+
   const tbody = document.getElementById('history-body');
-  if (!coins || coins.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:24px;color:var(--text-muted)">Waiting for first coin detections…</td></tr>`;
+  if (displayCoins.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:24px;color:var(--text-muted)">${searchQuery ? 'No matching coins found' : 'Waiting for first coin detections…'}</td></tr>`;
     return;
   }
 
-  tbody.innerHTML = coins.map(c => {
+  tbody.innerHTML = displayCoins.map(c => {
     const sc = scoreClass(c.score);
     const mult = fmtMult(c.initial_mc, c.peak_mc);
     const time = new Date(c.detected_at * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
@@ -304,7 +336,7 @@ function connectWS() {
         const coin = msg.coin;
         allCoins.unshift(coin);
         addToFeed(coin);
-        renderTable(allCoins.slice(0, 100));
+        renderTable(allCoins);
 
         const sc = scoreClass(coin.score);
         const emoji = sc === 'high' ? '🔥' : sc === 'mid' ? '⚡' : '📌';
@@ -320,7 +352,7 @@ function connectWS() {
         // Refresh table with updated outcome data
         fetch(`${API_BASE}/coins`)
           .then(r => r.json())
-          .then(coins => { allCoins = coins; renderTable(allCoins.slice(0, 100)); })
+          .then(coins => { allCoins = coins; renderTable(allCoins); })
           .catch(() => {});
       }
 
@@ -353,7 +385,7 @@ function startTableRefresh() {
   setInterval(() => {
     fetch(`${API_BASE}/coins`)
       .then(r => r.json())
-      .then(coins => { allCoins = coins; renderTable(allCoins.slice(0, 100)); })
+      .then(coins => { allCoins = coins; renderTable(allCoins); })
       .catch(() => {});
   }, 60 * 1000); // every 60s refresh table with latest outcome data
 }

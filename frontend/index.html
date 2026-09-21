@@ -124,8 +124,14 @@
     <!-- History Table -->
     <div class="table-section">
       <div class="table-header-row">
-        <span class="table-title">📋 Prediction History</span>
-        <span style="font-size:10px;color:var(--text-muted)">Updates every 5 minutes via DexScreener</span>
+        <div class="table-tabs">
+          <button class="tab-btn active" id="tab-history" onclick="switchTab('history')">📋 Prediction History</button>
+          <button class="tab-btn" id="tab-winners" onclick="switchTab('winners')">🏆 Biggest Winners</button>
+        </div>
+        <div class="table-controls">
+          <span class="update-hint">Updates every 5m</span>
+          <input type="text" id="coin-search" class="search-input" placeholder="Search coin..." oninput="handleSearch()" />
+        </div>
       </div>
       <div class="table-wrap">
         <table id="history-table">
