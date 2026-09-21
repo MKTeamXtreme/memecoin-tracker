@@ -11,7 +11,7 @@ let winChart  = null;
 let ws        = null;
 const MAX_FEED = 60;     // max cards in live feed
 let currentTab = 'history';
-let searchQuery = '';
+let sidebarSearchQuery = '';
 
 function switchTab(tab) {
   currentTab = tab;
@@ -20,9 +20,9 @@ function switchTab(tab) {
   renderTable(allCoins);
 }
 
-function handleSearch() {
-  searchQuery = document.getElementById('coin-search').value.toLowerCase();
-  renderTable(allCoins);
+function handleFeedSearch() {
+  sidebarSearchQuery = document.getElementById('feed-search').value.toLowerCase();
+  renderFeed();
 }
 
 // ── Copy contract address to clipboard ───────────────────────────────────────
@@ -155,34 +155,41 @@ function addToFeed(coin) {
   feedCoins.unshift(coin);
   if (feedCoins.length > MAX_FEED) feedCoins.pop();
 
-  const feed  = document.getElementById('feed');
-  const empty = document.getElementById('feed-empty');
+  if (!sidebarSearchQuery) {
+    renderFeed();
+  }
+}
 
-  if (empty) empty.remove();
+function renderFeed() {
+  const feed = document.getElementById('feed');
+  feed.innerHTML = '';
 
-  const el = document.createElement('div');
-  el.innerHTML = buildCoinCard(coin);
-  feed.insertBefore(el.firstElementChild, feed.firstChild);
-
-  // Trim old cards
-  while (feed.children.length > MAX_FEED) {
-    feed.removeChild(feed.lastChild);
+  let displayCards = [];
+  if (sidebarSearchQuery) {
+    displayCards = allCoins.filter(c => 
+      (c.name || '').toLowerCase().includes(sidebarSearchQuery) ||
+      (c.symbol || '').toLowerCase().includes(sidebarSearchQuery) ||
+      (c.mint || '').toLowerCase().includes(sidebarSearchQuery)
+    ).slice(0, 60);
+  } else {
+    displayCards = feedCoins;
   }
 
-  document.getElementById('feed-count').textContent = `${feedCoins.length} coins`;
+  if (displayCards.length === 0) {
+    feed.innerHTML = `<div class="empty-state" id="feed-empty"><div class="icon">🔍</div><p>${sidebarSearchQuery ? 'No matching coins found' : 'Scanning Pump.fun for new tokens...<br/>Coins scoring 35+ will appear here.'}</p></div>`;
+  } else {
+    displayCards.forEach(c => {
+      const el = document.createElement('div');
+      el.innerHTML = buildCoinCard(c);
+      feed.appendChild(el.firstElementChild);
+    });
+  }
+  document.getElementById('feed-count').textContent = `${displayCards.length} coins`;
 }
 
 // ── History Table ─────────────────────────────────────────────────────────
 function renderTable(coins) {
   let displayCoins = [...(coins || [])];
-
-  if (searchQuery) {
-    displayCoins = displayCoins.filter(c => 
-      (c.name || '').toLowerCase().includes(searchQuery) ||
-      (c.symbol || '').toLowerCase().includes(searchQuery) ||
-      (c.mint || '').toLowerCase().includes(searchQuery)
-    );
-  }
 
   if (currentTab === 'winners') {
     displayCoins = displayCoins.filter(c => c.peak_mc && c.initial_mc && c.initial_mc > 0);
@@ -194,7 +201,7 @@ function renderTable(coins) {
 
   const tbody = document.getElementById('history-body');
   if (displayCoins.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:24px;color:var(--text-muted)">${searchQuery ? 'No matching coins found' : 'Waiting for first coin detections…'}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:24px;color:var(--text-muted)">Waiting for first coin detections…</td></tr>`;
     return;
   }
 

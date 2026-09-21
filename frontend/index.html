@@ -48,9 +48,12 @@
 
   <!-- Sidebar: Live Feed -->
   <aside class="sidebar">
-    <div class="sidebar-header">
-      <span class="sidebar-title">🔴 Live Feed</span>
-      <span class="coin-count-badge" id="feed-count">0 coins</span>
+    <div class="sidebar-header" style="flex-direction: column; align-items: stretch; gap: 10px;">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <span class="sidebar-title">🔴 Live Feed</span>
+        <span class="coin-count-badge" id="feed-count">0 coins</span>
+      </div>
+      <input type="text" id="feed-search" class="search-input" placeholder="Search history for coins..." oninput="handleFeedSearch()" style="width: 100%;" />
     </div>
     <div class="feed" id="feed">
       <div class="empty-state" id="feed-empty">
@@ -130,7 +133,6 @@
         </div>
         <div class="table-controls">
           <span class="update-hint">Updates every 5m</span>
-          <input type="text" id="coin-search" class="search-input" placeholder="Search coin..." oninput="handleSearch()" />
         </div>
       </div>
       <div class="table-wrap">
