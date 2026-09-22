@@ -52,9 +52,6 @@ function copyAddr(addr, el) {
   });
 }
 
-function openJupiter(mint) {
-  window.open(`https://jup.ag/swap/SOL-${mint}`, '_blank');
-}
 
 // ── Desktop Notifications ──────────────────────────────────────────────────
 let notificationsEnabled = false;
@@ -181,7 +178,7 @@ function buildCoinCard(coin) {
       </div>
       <div class="card-actions">
         <a class="btn btn-primary" href="${pump}"  target="_blank" rel="noopener">Pump.fun ↗</a>
-        <button class="btn btn-ghost" onclick="openJupiter('${coin.mint}')">Jupiter ↗</button>
+        <a class="btn btn-ghost"   href="https://jup.ag/swap/SOL-${coin.mint}" target="_blank" rel="noopener">Jupiter ↗</a>
         <a class="btn btn-ghost"   href="${ax}"    target="_blank" rel="noopener">Axiom ↗</a>
         <a class="btn btn-ghost"   href="${dex}"   target="_blank" rel="noopener">DEX ↗</a>
       </div>
