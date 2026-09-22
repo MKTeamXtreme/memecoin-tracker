@@ -28,7 +28,7 @@ from fastapi.staticfiles import StaticFiles
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from database import init_db, save_coin, get_recent_coins, get_stats
+from database import init_db, save_coin, get_recent_coins, get_stats, get_biggest_winners
 from scorer import score_coin
 from tracker import run_outcome_update
 from news import refresh_trends, _trending_symbols, _news_keywords
@@ -320,6 +320,11 @@ async def root():
 @app.get("/api/coins")
 async def api_coins(limit: int = 150, offset: int = 0):
     return JSONResponse(get_recent_coins(limit, offset))
+
+
+@app.get("/api/biggest_winners")
+async def api_biggest_winners(limit: int = 50):
+    return JSONResponse(get_biggest_winners(limit))
 
 
 @app.get("/api/stats")

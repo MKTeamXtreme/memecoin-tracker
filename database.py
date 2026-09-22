@@ -140,6 +140,30 @@ def get_recent_coins(limit: int = 100, offset: int = 0) -> List[Dict]:
         conn.close()
 
 
+def get_biggest_winners(limit: int = 50) -> List[Dict]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT * FROM coins 
+               WHERE peak_mc IS NOT NULL AND initial_mc > 0 
+               ORDER BY (peak_mc / initial_mc) DESC 
+               LIMIT ?""",
+            (limit,)
+        ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            if d.get("score_breakdown"):
+                try:
+                    d["score_breakdown"] = json.loads(d["score_breakdown"])
+                except Exception:
+                    pass
+            result.append(d)
+        return result
+    finally:
+        conn.close()
+
+
 def get_stats() -> Dict:
     conn = get_connection()
     try:

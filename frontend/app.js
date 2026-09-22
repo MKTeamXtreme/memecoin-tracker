@@ -12,12 +12,24 @@ let ws        = null;
 const MAX_FEED = 60;     // max cards in live feed
 let currentTab = 'history';
 let sidebarSearchQuery = '';
+let winnerCoins = [];
 
 function switchTab(tab) {
   currentTab = tab;
   document.getElementById('tab-history').classList.toggle('active', tab === 'history');
   document.getElementById('tab-winners').classList.toggle('active', tab === 'winners');
-  renderTable(allCoins);
+  
+  if (tab === 'winners') {
+    fetch(`${API_BASE}/biggest_winners`)
+      .then(r => r.json())
+      .then(coins => {
+        winnerCoins = coins;
+        renderTable(winnerCoins);
+      })
+      .catch(() => renderTable(allCoins));
+  } else {
+    renderTable(allCoins);
+  }
 }
 
 function handleFeedSearch() {
@@ -359,7 +371,7 @@ function connectWS() {
         // Refresh table with updated outcome data
         fetch(`${API_BASE}/coins`)
           .then(r => r.json())
-          .then(coins => { allCoins = coins; renderTable(allCoins); })
+          .then(coins => { allCoins = coins; if (currentTab === 'history') renderTable(allCoins); })
           .catch(() => {});
       }
 
@@ -392,7 +404,7 @@ function startTableRefresh() {
   setInterval(() => {
     fetch(`${API_BASE}/coins`)
       .then(r => r.json())
-      .then(coins => { allCoins = coins; renderTable(allCoins); })
+      .then(coins => { allCoins = coins; if (currentTab === 'history') renderTable(allCoins); })
       .catch(() => {});
   }, 60 * 1000); // every 60s refresh table with latest outcome data
 }
