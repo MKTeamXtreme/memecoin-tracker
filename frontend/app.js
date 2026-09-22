@@ -53,9 +53,36 @@ function copyAddr(addr, el) {
 }
 
 function openJupiter(mint) {
-  navigator.clipboard.writeText(mint).then(() => {
-    showToast('Address Copied!', 'Paste it into Jupiter to swap.', 'success');
-    window.open('https://jup.ag', '_blank');
+  window.open(`https://jup.ag/swap/SOL-${mint}`, '_blank');
+}
+
+// ── Desktop Notifications ──────────────────────────────────────────────────
+let notificationsEnabled = false;
+
+function toggleNotifications() {
+  if (!notificationsEnabled) {
+    Notification.requestPermission().then(perm => {
+      if (perm === 'granted') {
+        notificationsEnabled = true;
+        document.getElementById('notif-btn').textContent = '🔔 Alerts On';
+        document.getElementById('notif-btn').style.borderColor = 'var(--primary)';
+        showToast('Notifications Enabled', 'You will receive desktop alerts for new coins.', 'success');
+      } else {
+        showToast('Permission Denied', 'Allow notifications in your browser settings.', 'error');
+      }
+    });
+  } else {
+    notificationsEnabled = false;
+    document.getElementById('notif-btn').textContent = '🔕 Alerts Off';
+    document.getElementById('notif-btn').style.borderColor = 'var(--border-color)';
+  }
+}
+
+function notifyUser(coin) {
+  if (!notificationsEnabled) return;
+  new Notification(`New Coin: ${coin.name} ($${coin.symbol})`, {
+    body: `Score: ${coin.score} | MC: ${fmtMC(coin.initial_mc)}`,
+    icon: coin.image_uri || ''
   });
 }
 
@@ -253,15 +280,21 @@ function renderStats(s) {
   document.getElementById('h-today').textContent  = s.today || 0;
   document.getElementById('s-with-outcomes').textContent = s.brackets?.reduce((a,b) => a + (b.total||0), 0) || 0;
 
-  const high = s.brackets?.[0];
-  const mid  = s.brackets?.[1];
-  const low  = s.brackets?.[2];
+  const perf = s.brackets?.[0];
+  const high = s.brackets?.[1];
+  const mid  = s.brackets?.[2];
+  const low  = s.brackets?.[3];
 
+  if (perf) {
+    const pct = perf.total > 0 ? Math.round((perf.wins_2x / perf.total) * 100) : 0;
+    document.getElementById('s-high-win').textContent  = perf.total > 0 ? `${pct}%` : '—';
+    document.getElementById('s-avg-mult').textContent  = perf.avg_mult ? `${perf.avg_mult}x` : '—';
+    document.getElementById('h-winrate').textContent   = perf.total > 0 ? `${pct}%` : '—';
+    document.getElementById('bar-perf').style.width    = `${pct}%`;
+    document.getElementById('bs-perf').textContent     = perf.total > 0 ? `${pct}% win — ${perf.total} coins` : 'No data yet';
+  }
   if (high) {
     const pct = high.total > 0 ? Math.round((high.wins_2x / high.total) * 100) : 0;
-    document.getElementById('s-high-win').textContent  = high.total > 0 ? `${pct}%` : '—';
-    document.getElementById('s-avg-mult').textContent  = high.avg_mult ? `${high.avg_mult}x` : '—';
-    document.getElementById('h-winrate').textContent   = high.total > 0 ? `${pct}%` : '—';
     document.getElementById('bar-high').style.width    = `${pct}%`;
     document.getElementById('bs-high').textContent     = high.total > 0 ? `${pct}% win — ${high.total} coins` : 'No data yet';
   }
@@ -285,16 +318,17 @@ function initChart() {
   winChart = new Chart(ctx, {
     type: 'bar',
     data: {
-      labels: ['70–100', '50–69', '35–49'],
+      labels: ['100', '70–99', '50–69', '0–49'],
       datasets: [{
         label: '2x Win %',
-        data: [0, 0, 0],
+        data: [0, 0, 0, 0],
         backgroundColor: [
+          'rgba(168,85,247,.7)',
           'rgba(16,185,129,.7)',
           'rgba(245,158,11,.7)',
           'rgba(244,63,94,.7)',
         ],
-        borderColor: ['#10b981', '#f59e0b', '#f43f5e'],
+        borderColor: ['#a855f7', '#10b981', '#f59e0b', '#f43f5e'],
         borderWidth: 1,
         borderRadius: 4,
       }]
@@ -364,6 +398,8 @@ function connectWS() {
           `MC: ${fmtMC(coin.initial_mc)} · ${coin.has_twitter?'𝕏 ':'' }${coin.has_telegram?'✈ ':''}${coin.reply_count} replies`,
           sc === 'high' ? 'success' : sc === 'mid' ? 'warn' : ''
         );
+        
+        notifyUser(coin);
       }
 
       else if (msg.type === 'stats_update') {

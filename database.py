@@ -172,7 +172,7 @@ def get_stats() -> Dict:
         today = conn.execute("SELECT COUNT(*) FROM coins WHERE detected_at >= ?", (today_ts,)).fetchone()[0]
 
         brackets = []
-        for lo, hi, label in [(70, 101, "70–100 🔥"), (50, 70, "50–69 ⚡"), (0, 50, "0–49 🔻")]:
+        for lo, hi, label in [(100, 101, "100 🎯"), (70, 100, "70–99 🔥"), (50, 70, "50–69 ⚡"), (0, 50, "0–49 🔻")]:
             row = conn.execute(
                 """SELECT
                     COUNT(*) as total,
