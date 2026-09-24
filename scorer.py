@@ -24,11 +24,11 @@ def score_coin(coin: Dict[str, Any]) -> Tuple[int, Dict]:
     # ── 1. MARKET CAP RANGE (max 60 pts) ─────────────────────────────────────
     mc = float(coin.get("usd_market_cap") or coin.get("initial_mc") or 0)
 
-    if   20_000 <= mc <= 30_000:  mc_pts = 60   # Golden zone — 4.35x avg
-    elif 10_000 <= mc <  20_000:  mc_pts = 40   # Decent — 1.84x avg
-    elif 70_000 <= mc <= 200_000: mc_pts = 40   # Solid historicals
-    elif 30_000 <  mc <= 40_000:  mc_pts = 30   # Worse — 1.31x avg
-    elif 40_000 <  mc <  70_000:  mc_pts = 15   # Very weak
+    if   20_000 <= mc <= 30_000:  mc_pts = 60   # Golden zone — 9.26x avg, 32.1% 2x rate
+    elif 10_000 <= mc <  20_000:  mc_pts = 40   # Solid — 2.07x avg, 28.4% 2x rate
+    elif 30_000 <  mc <= 40_000:  mc_pts = 30   # Decent — 1.34x avg, 25.9% 2x rate
+    elif 40_000 <  mc <  70_000:  mc_pts = 15   # Weak — 1.45x avg, 11.5% 2x rate
+    elif 70_000 <= mc <= 200_000: mc_pts = 15   # Weak — 1.47x avg, 15.7% 2x rate (was wrongly 40pts)
     elif mc > 200_000:            mc_pts = 10   # Already moved
     elif 5_000  <= mc < 10_000:   mc_pts = 5    # Too small
     else:                         mc_pts = 0
