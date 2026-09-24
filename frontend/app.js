@@ -277,6 +277,14 @@ function renderStats(s) {
   document.getElementById('h-today').textContent  = s.today || 0;
   document.getElementById('s-with-outcomes').textContent = s.brackets?.reduce((a,b) => a + (b.total||0), 0) || 0;
 
+  if (s.paper) {
+    document.getElementById('s-paper-pnl').textContent = `${s.paper.net_profit_sol > 0 ? '+' : ''}${s.paper.net_profit_sol.toFixed(2)} SOL`;
+    document.getElementById('s-paper-pnl').style.color = s.paper.net_profit_sol >= 0 ? 'var(--success)' : 'var(--danger)';
+    document.getElementById('s-paper-trades').textContent = s.paper.total_trades;
+    document.getElementById('s-paper-open').textContent = s.paper.open_trades;
+    document.getElementById('s-paper-closed').textContent = s.paper.closed_trades;
+  }
+
   const perf = s.brackets?.[0];
   const high = s.brackets?.[1];
   const mid  = s.brackets?.[2];

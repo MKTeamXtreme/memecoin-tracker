@@ -6,6 +6,7 @@ import asyncio
 import time
 import aiohttp
 from database import get_pending_tracking, update_mc_snapshot, mark_tracking_done
+from paper import update_paper_trade
 
 DEXSCREENER_URL = "https://api.dexscreener.com/latest/dex/tokens/{}"
 
@@ -56,6 +57,7 @@ async def run_outcome_update():
             if elapsed >= 60 and coin["mc_1min"] is None:
                 update_mc_snapshot(mint, "mc_1min", mc)
                 updated += 1
+            update_paper_trade(mint, mc, is_final=False)
 
             # 5-minute snapshot
             if elapsed >= 5 * 60 and coin["mc_5min"] is None:
@@ -76,6 +78,7 @@ async def run_outcome_update():
             if elapsed >= 24 * 60 * 60 and coin["mc_24hr"] is None:
                 update_mc_snapshot(mint, "mc_24hr", mc)
                 mark_tracking_done(mint)
+                update_paper_trade(mint, mc, is_final=True)
                 updated += 1
 
             # Always update peak

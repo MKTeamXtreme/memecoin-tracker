@@ -29,6 +29,7 @@ from fastapi.staticfiles import StaticFiles
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from database import init_db, save_coin, get_recent_coins, get_stats, get_biggest_winners
+from paper import init_paper_db, open_paper_trade, get_paper_stats
 from scorer import score_coin
 from tracker import run_outcome_update
 from news import refresh_trends, _trending_symbols, _news_keywords
@@ -157,6 +158,8 @@ async def process_pairs(pairs: List[dict]) -> List[dict]:
 
         if save_coin(record):
             new_found.append(record)
+            if score == 100:
+                open_paper_trade(mint, mc, 0.02)
 
     return new_found
 
@@ -287,6 +290,7 @@ async def news_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    init_paper_db()
     for coin in get_recent_coins(limit=5000):
         seen_mints.add(coin["mint"])
     print(f"[Boot] {len(seen_mints)} existing coins pre-loaded")
@@ -329,7 +333,9 @@ async def api_biggest_winners(limit: int = 50):
 
 @app.get("/api/stats")
 async def api_stats():
-    return JSONResponse(get_stats())
+    stats = get_stats()
+    stats["paper"] = get_paper_stats()
+    return JSONResponse(stats)
 
 
 @app.websocket("/ws")
@@ -339,6 +345,7 @@ async def websocket_endpoint(ws: WebSocket):
     try:
         coins = get_recent_coins(limit=50)
         stats = get_stats()
+        stats["paper"] = get_paper_stats()
         await ws.send_text(json.dumps({"type": "initial", "coins": coins, "stats": stats}))
         while True:
             await ws.receive_text()
