@@ -14,7 +14,7 @@ from typing import Set
 _trending_symbols: Set[str] = set()
 _news_keywords:    Set[str] = set()
 _last_refresh = 0
-REFRESH_INTERVAL = 1 * 60  # refresh every 1 minute
+REFRESH_INTERVAL = 30  # refresh every 30 seconds
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
