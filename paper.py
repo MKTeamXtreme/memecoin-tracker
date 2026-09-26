@@ -60,11 +60,16 @@ def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float):
             trade["sold_half"]     = 1
             trade["sold_half_sol"] = sold_half_sol
 
-        # Close moonbag at 1hr
+        # Stop Loss at -50%
+        mult = current_mc / trade["entry_mc"]
+        is_stop_loss = not trade["sold_half"] and mult <= 0.50
+
+        # Close moonbag at 24hr
         is_final = elapsed_secs >= PAPER_EXIT_HRS * 3600
-        if is_final:
+        
+        if is_final or is_stop_loss:
             rem_sol  = (trade["invested_sol"] / 2.0) if trade["sold_half"] else trade["invested_sol"]
-            exit_sol = rem_sol * (current_mc / trade["entry_mc"])
+            exit_sol = rem_sol * mult
             total_returned = (trade.get("sold_half_sol") or 0) + (updates.get("sold_half_sol") or 0) + exit_sol
             updates["exit_mc"]    = current_mc
             updates["exit_sol"]   = exit_sol
@@ -138,21 +143,35 @@ def backfill_paper_trades():
     conn.execute("DELETE FROM paper_trades")
     conn.commit()
 
-    # Use mc_24hr as the moonbag exit — proven best exit (+51% ROI vs -32% for 1hr)
+    # Use mc_24hr as the moonbag exit
     rows = conn.execute(
-        "SELECT mint, initial_mc, peak_mc, mc_24hr FROM coins WHERE score = 100 AND initial_mc > 0 AND mc_24hr IS NOT NULL"
+        "SELECT mint, initial_mc, peak_mc, mc_24hr, mc_1min, mc_5min, mc_15min, mc_1hr FROM coins WHERE score = 100 AND initial_mc > 0"
     ).fetchall()
     conn.close()
 
-    for mint, initial_mc, peak_mc, mc_24hr in rows:
+    for mint, initial_mc, peak_mc, mc_24hr, mc_1min, mc_5min, mc_15min, mc_1hr in rows:
+        # 1-min momentum filter (same as autotrader)
+        if mc_1min is not None and mc_1min <= initial_mc * 0.50:
+            continue  # Skipped by autotrader due to instant dumping
+
         open_paper_trade(mint, initial_mc, PAPER_INVEST)
 
         # Simulate 2x half-sell
         if peak_mc and peak_mc >= initial_mc * PAPER_HALF_AT:
             update_paper_trade(mint, initial_mc * PAPER_HALF_AT, elapsed_secs=0)
 
-        # Exit moonbag at 24hr price
-        update_paper_trade(mint, mc_24hr, elapsed_secs=PAPER_EXIT_HRS * 3600)
+        # Simulate stop-loss using snapshots
+        stop_triggered = False
+        for snap in [mc_1min, mc_5min, mc_15min, mc_1hr]:
+            if snap is not None and snap <= initial_mc * 0.50:
+                update_paper_trade(mint, snap, elapsed_secs=0)  # Trigger stop loss
+                stop_triggered = True
+                break
+        
+        if not stop_triggered:
+            if mc_24hr is not None:
+                # Exit moonbag at 24hr price
+                update_paper_trade(mint, mc_24hr, elapsed_secs=PAPER_EXIT_HRS * 3600)
 
 if __name__ == "__main__":
     print("Running paper trade backfill (1hr exit strategy)...")
