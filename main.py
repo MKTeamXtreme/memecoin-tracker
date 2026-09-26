@@ -59,7 +59,7 @@ HEADERS = {
 }
 
 MIN_SCORE      = 35
-POLL_INTERVAL  = 15      # seconds between polls
+POLL_INTERVAL  = 5       # seconds between polls (reduced from 15 for faster detection)
 TRACK_INTERVAL = 60      # seconds between outcome updates
 
 # Only surface coins in this MC range
@@ -232,14 +232,14 @@ async def poll_loop():
         while True:
             found = []
             try:
-                if poll_count % 3 == 0:
-                    # Every 3rd poll: profiles endpoint (newest token listings)
-                    found = await poll_profiles(session)
-                else:
-                    # Other polls: rotate through search keywords
-                    url = SEARCH_QUERIES[search_idx % len(SEARCH_QUERIES)]
-                    search_idx += 1
-                    found = await poll_search(session, url)
+                # Always check profiles endpoint (best source for brand new coins)
+                found = await poll_profiles(session)
+                # Also run a keyword search every poll for extra coverage
+                url = SEARCH_QUERIES[search_idx % len(SEARCH_QUERIES)]
+                search_idx += 1
+                keyword_found = await poll_search(session, url)
+                # Merge results (dedup handled by seen_mints)
+                found.extend(keyword_found)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
