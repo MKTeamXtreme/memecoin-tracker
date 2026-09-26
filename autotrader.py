@@ -53,10 +53,10 @@ log = logging.getLogger("autotrader")
 # ── TRADE STATE ───────────────────────────────────────────────────────────────
 @dataclass
 class Trade:
-    is_news_match: bool = False
     mint:         str
     name:         str
     entry_mc:     float
+    is_news_match: bool = False
     entry_time:   float = field(default_factory=time.time)
     sol_invested: float = TRADE_AMOUNT_SOL
     half_sold:    bool  = False
