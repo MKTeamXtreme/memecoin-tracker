@@ -12,7 +12,7 @@ from typing import Set
 
 # Cache so we don't hammer APIs on every poll
 _trending_symbols: Set[str] = set()
-_news_keywords:    Set[str] = set()
+_news_keywords = {}
 _last_refresh = 0
 REFRESH_INTERVAL = 30  # refresh every 30 seconds
 
@@ -42,7 +42,7 @@ async def _fetch_coingecko_trending(session: aiohttp.ClientSession) -> Set[str]:
         return set()
 
 
-async def _fetch_rss_keywords(session: aiohttp.ClientSession) -> Set[str]:
+async def _fetch_rss_keywords(session: aiohttp.ClientSession) -> dict:
     """Pull hot keywords from free RSS feeds."""
     feeds = [
         "https://cointelegraph.com/rss",
