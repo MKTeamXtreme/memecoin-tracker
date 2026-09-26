@@ -171,13 +171,6 @@ async def buy_coin(
     private_key_b58: str = "",
     is_news_match: bool = False
 ):
-    session: aiohttp.ClientSession,
-    mint: str,
-    name: str,
-    entry_mc: float,
-    wallet_pubkey: str = "",
-    private_key_b58: str = ""
-):
     if mint in open_trades:
         return  # already in this trade
 
@@ -200,8 +193,7 @@ async def buy_coin(
         is_news_match=is_news_match,
         sol_invested=invest_amt,
         mint=mint, name=name,
-        entry_mc=entry_mc,
-        sol_invested=TRADE_AMOUNT_SOL
+        entry_mc=entry_mc
     )
 
 
