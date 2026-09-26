@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from database import init_db, save_coin, get_recent_coins, get_stats, get_biggest_winners
 from paper import init_paper_db, open_paper_trade, get_paper_stats
+from autotrader import on_new_coin, monitor_loop, PAPER_MODE, TRADE_AMOUNT_SOL
 from scorer import score_coin
 from tracker import run_outcome_update
 from news import refresh_trends, _trending_symbols, _news_keywords
@@ -160,6 +161,10 @@ async def process_pairs(pairs: List[dict]) -> List[dict]:
             new_found.append(record)
             if score == 100:
                 open_paper_trade(mint, mc, 0.02)
+                asyncio.create_task(on_new_coin(
+                    session=None, mint=mint,
+                    name=raw["name"], entry_mc=mc,
+                ))
 
     return new_found
 
@@ -298,9 +303,12 @@ async def lifespan(app: FastAPI):
     # Fetch trending data immediately on boot
     await refresh_trends()
 
-    poll_task  = asyncio.create_task(poll_loop())
-    track_task = asyncio.create_task(track_loop())
-    news_task  = asyncio.create_task(news_loop())
+    poll_task   = asyncio.create_task(poll_loop())
+    track_task  = asyncio.create_task(track_loop())
+    news_task   = asyncio.create_task(news_loop())
+    trader_task = asyncio.create_task(monitor_loop())
+    mode = 'PAPER' if PAPER_MODE else 'LIVE'
+    print(f"[Boot] AutoTrader started in {mode} mode ({TRADE_AMOUNT_SOL} SOL per trade)")
     print("[Boot] Background tasks started")
     print("[Boot] Open http://localhost:8000 in your browser")
 
@@ -309,6 +317,7 @@ async def lifespan(app: FastAPI):
     poll_task.cancel()
     track_task.cancel()
     news_task.cancel()
+    trader_task.cancel()
 
 
 # ── FastAPI app ────────────────────────────────────────────────────────────────
