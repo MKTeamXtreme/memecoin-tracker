@@ -280,7 +280,7 @@ function renderTable(coins) {
 
         <td class="name-cell">
           <span class="status-dot" style="background:${sc==='high'?'var(--success)':sc==='mid'?'var(--warn)':'var(--danger)'}"></span>
-          ${c.name || '?'} <span style="color:var(--text-muted)">$${c.symbol||'?'}</span>
+          ${c.name || '?'} <span style="color:var(--text-muted)">$${c.symbol||'?'}</span> ${(c.score_breakdown && c.score_breakdown.trend_bonus) ? '<span title="Grand Slam News Match!" style="margin-left:5px">📰</span>' : ''}
         </td>
         <td><span class="score-badge ${sc}" style="font-size:10px;padding:2px 8px">${c.score}</span></td>
         <td>${fmtMC(c.initial_mc)}</td>
@@ -526,7 +526,7 @@ function renderPaperTable(trades) {
       <tr>
         <td>${time}</td>
         <td class="name-cell" style="cursor:pointer" onclick="copyAddr('${t.mint}', this)">
-          ${t.name || '?'}
+          ${t.name || '?'} ${t.is_news ? '<span title="Grand Slam News Match!" style="margin-left:5px">📰</span>' : ''}
           <span class="addr-hint" style="font-size:10px;margin-left:8px;color:var(--text-muted)">click to copy</span>
         </td>
         <td style="color:${statusColor}; font-weight:600">${t.status}</td>

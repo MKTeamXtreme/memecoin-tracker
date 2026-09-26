@@ -109,7 +109,7 @@ def get_recent_paper_trades(limit: int = 50):
         rows = conn.execute("""
             SELECT pt.mint, c.name, pt.entry_mc, pt.invested_sol,
                    pt.sold_half, pt.sold_half_sol, pt.profit_sol,
-                   pt.status, pt.created_at, pt.exit_mc
+                   pt.status, pt.created_at, pt.exit_mc, c.score_breakdown
             FROM paper_trades pt
             LEFT JOIN coins c ON c.mint = pt.mint
             ORDER BY pt.created_at DESC LIMIT ?
@@ -117,6 +117,11 @@ def get_recent_paper_trades(limit: int = 50):
         
         trades = []
         for r in rows:
+            # Check if this was a news match by looking at the breakdown
+            is_news = False
+            if r[10]:
+                is_news = "trend_bonus" in r[10] or "NEWS/HYPE MATCH" in r[10]
+
             trades.append({
                 "mint": r[0],
                 "name": r[1],
@@ -127,7 +132,8 @@ def get_recent_paper_trades(limit: int = 50):
                 "profit_sol": r[6] or 0.0,
                 "status": r[7],
                 "created_at": r[8],
-                "exit_mc": r[9]
+                "exit_mc": r[9],
+                "is_news": is_news
             })
         return trades
     except sqlite3.OperationalError:
