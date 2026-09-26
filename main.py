@@ -160,9 +160,11 @@ async def process_pairs(pairs: List[dict]) -> List[dict]:
         if save_coin(record):
             new_found.append(record)
             if score == 100:
+                is_news = "trend_bonus" in breakdown
                 asyncio.create_task(on_new_coin(
                     session=None, mint=mint,
                     name=raw["name"], entry_mc=mc,
+                    is_news_match=is_news
                 ))
 
     return new_found

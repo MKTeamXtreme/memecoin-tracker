@@ -43,11 +43,15 @@ async def _fetch_coingecko_trending(session: aiohttp.ClientSession) -> Set[str]:
 
 
 async def _fetch_rss_keywords(session: aiohttp.ClientSession) -> Set[str]:
-    """Pull hot keywords from free crypto RSS feeds — no API key needed."""
+    """Pull hot keywords from free RSS feeds."""
     feeds = [
         "https://cointelegraph.com/rss",
         "https://coindesk.com/arc/outboundfeeds/rss/",
-        "https://decrypt.co/feed",
+        # Global macro/politics news
+        "https://news.google.com/rss",
+        "https://news.google.com/rss/headlines/section/topic/POLITICS",
+        "https://news.google.com/rss/headlines/section/topic/BUSINESS",
+        "https://news.google.com/rss/headlines/section/topic/TECHNOLOGY"
     ]
     words = set()
     for url in feeds:
@@ -55,17 +59,21 @@ async def _fetch_rss_keywords(session: aiohttp.ClientSession) -> Set[str]:
             async with session.get(url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=8)) as r:
                 if r.status != 200:
                     continue
-                text = await r.text()
-                # Pull words from <title> tags — they contain the hottest keywords
+                resp_text = await r.text()
                 import re
-                titles = re.findall(r"<title>(.*?)</title>", text, re.DOTALL)
-                for title in titles[:20]:
+                titles = re.findall(r"<title>(.*?)</title>", resp_text, re.DOTALL)
+                for title in titles[:30]:
                     for w in title.upper().split():
                         w = re.sub(r"[^A-Z0-9]", "", w)
-                        if 2 <= len(w) <= 10 and w.isalpha():
-                            words.add(w)
+                        if 4 <= len(w) <= 12 and w.isalpha():
+                            if w not in ["THIS", "THAT", "WITH", "FROM", "THEIR", "ABOUT", "WHAT", "NEWS", "LATEST", "GOOGLE", "YOUR", "HAVE", "BEEN", "WILL"]:
+                                words.add(w)
         except Exception:
             continue
+    
+    for w in ["TRUMP", "ELON", "GROK", "MAGA", "KAMALA", "BIDEN"]:
+        words.add(w)
+        
     return words
 
 

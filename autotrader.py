@@ -53,6 +53,7 @@ log = logging.getLogger("autotrader")
 # ── TRADE STATE ───────────────────────────────────────────────────────────────
 @dataclass
 class Trade:
+    is_news_match: bool = False
     mint:         str
     name:         str
     entry_mc:     float
@@ -167,25 +168,37 @@ async def buy_coin(
     name: str,
     entry_mc: float,
     wallet_pubkey: str = "",
+    private_key_b58: str = "",
+    is_news_match: bool = False
+):
+    session: aiohttp.ClientSession,
+    mint: str,
+    name: str,
+    entry_mc: float,
+    wallet_pubkey: str = "",
     private_key_b58: str = ""
 ):
     if mint in open_trades:
         return  # already in this trade
 
-    log.info(f"BUY | {name} | MC ${entry_mc/1000:.1f}k | {TRADE_AMOUNT_SOL} SOL {'[PAPER]' if PAPER_MODE else '[LIVE]'}")
+    invest_amt = TRADE_AMOUNT_SOL * 2 if is_news_match else TRADE_AMOUNT_SOL
+    news_tag = " [NEWS/HYPE]" if is_news_match else ""
+    log.info(f"BUY | {name} | MC ${entry_mc/1000:.1f}k | {invest_amt} SOL{news_tag} {'[PAPER]' if PAPER_MODE else '[LIVE]'}")
 
     tx = await execute_swap(
         session, SOL_MINT, mint,
-        TRADE_AMOUNT_SOL, wallet_pubkey, private_key_b58
+        invest_amt, wallet_pubkey, private_key_b58
     )
     if tx is None and not PAPER_MODE:
         log.error(f"Buy failed for {name}")
         return
 
     from paper import open_paper_trade
-    open_paper_trade(mint, entry_mc, TRADE_AMOUNT_SOL)
+    open_paper_trade(mint, entry_mc, invest_amt)
 
     open_trades[mint] = Trade(
+        is_news_match=is_news_match,
+        sol_invested=invest_amt,
         mint=mint, name=name,
         entry_mc=entry_mc,
         sol_invested=TRADE_AMOUNT_SOL

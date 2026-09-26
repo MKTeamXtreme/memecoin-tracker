@@ -63,8 +63,16 @@ def score_coin(coin: Dict[str, Any]) -> Tuple[int, Dict]:
     }
     score += social_pts
 
-    # ── RED FLAG DEDUCTIONS ───────────────────────────────────────────────────
     flags = []
+
+    # ── 4. GLOBAL NEWS / TRENDING MATCHER ────────────────────────────────────
+    bonus, reasons = get_news_score_bonus(coin.get("symbol"), coin.get("name"))
+    if bonus > 0:
+        breakdown["trend_bonus"] = {"score": bonus, "max": 25, "reasons": reasons}
+        score += bonus
+        flags.append(f"NEWS/HYPE MATCH: {', '.join(reasons)}")
+
+    # ── RED FLAG DEDUCTIONS ───────────────────────────────────────────────────
     deductions = 0
 
     # Below $10k — mostly flatliners
