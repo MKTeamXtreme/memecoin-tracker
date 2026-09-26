@@ -136,6 +136,7 @@
         <div class="table-tabs">
           <button class="tab-btn active" id="tab-history" onclick="switchTab('history')">📋 Prediction History</button>
           <button class="tab-btn" id="tab-winners" onclick="switchTab('winners')">🏆 Biggest Winners</button>
+          <button class="tab-btn" id="tab-paper" onclick="switchTab('paper')">🤖 Paper Trades</button>
         </div>
         <div class="table-controls">
           <span class="update-hint">Updates every 5m</span>
@@ -143,7 +144,7 @@
       </div>
       <div class="table-wrap">
         <table id="history-table">
-          <thead>
+          <thead id="history-head">
             <tr>
               <th>Time</th>
               <th>Token</th>

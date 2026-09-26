@@ -98,6 +98,38 @@ def get_paper_stats():
     finally:
         conn.close()
 
+def get_recent_paper_trades(limit: int = 50):
+    conn = get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT pt.mint, c.name, pt.entry_mc, pt.invested_sol,
+                   pt.sold_half, pt.sold_half_sol, pt.profit_sol,
+                   pt.status, pt.created_at, pt.exit_mc
+            FROM paper_trades pt
+            LEFT JOIN coins c ON c.mint = pt.mint
+            ORDER BY pt.created_at DESC LIMIT ?
+        """, (limit,)).fetchall()
+        
+        trades = []
+        for r in rows:
+            trades.append({
+                "mint": r[0],
+                "name": r[1],
+                "entry_mc": r[2],
+                "invested_sol": r[3],
+                "sold_half": bool(r[4]),
+                "sold_half_sol": r[5],
+                "profit_sol": r[6] or 0.0,
+                "status": r[7],
+                "created_at": r[8],
+                "exit_mc": r[9]
+            })
+        return trades
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
 def backfill_paper_trades():
     init_paper_db()
     conn = get_connection()

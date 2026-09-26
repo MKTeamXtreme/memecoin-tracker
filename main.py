@@ -29,7 +29,7 @@ from fastapi.staticfiles import StaticFiles
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from database import init_db, save_coin, get_recent_coins, get_stats, get_biggest_winners
-from paper import init_paper_db, open_paper_trade, get_paper_stats
+from paper import init_paper_db, open_paper_trade, get_paper_stats, get_recent_paper_trades
 from autotrader import on_new_coin, monitor_loop, PAPER_MODE, TRADE_AMOUNT_SOL
 from scorer import score_coin
 from tracker import run_outcome_update
@@ -345,6 +345,10 @@ async def api_stats():
     stats = get_stats()
     stats["paper"] = get_paper_stats()
     return JSONResponse(stats)
+
+@app.get("/api/paper_trades")
+async def api_paper_trades(limit: int = 50):
+    return JSONResponse(get_recent_paper_trades(limit))
 
 
 @app.websocket("/ws")

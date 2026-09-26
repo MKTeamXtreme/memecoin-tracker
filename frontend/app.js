@@ -18,6 +18,8 @@ function switchTab(tab) {
   currentTab = tab;
   document.getElementById('tab-history').classList.toggle('active', tab === 'history');
   document.getElementById('tab-winners').classList.toggle('active', tab === 'winners');
+  const paperTab = document.getElementById('tab-paper');
+  if (paperTab) paperTab.classList.toggle('active', tab === 'paper');
   
   if (tab === 'winners') {
     fetch(`${API_BASE}/biggest_winners`)
@@ -27,6 +29,15 @@ function switchTab(tab) {
         renderTable(winnerCoins);
       })
       .catch(() => renderTable(allCoins));
+  } else if (tab === 'paper') {
+    fetch(`${API_BASE}/paper_trades`)
+      .then(r => r.json())
+      .then(trades => {
+        renderPaperTable(trades);
+      })
+      .catch(() => {
+        document.getElementById('history-body').innerHTML = '<tr><td colspan="10" style="text-align:center">Error loading paper trades</td></tr>';
+      });
   } else {
     renderTable(allCoins);
   }
@@ -225,6 +236,24 @@ function renderFeed() {
 
 // ── History Table ─────────────────────────────────────────────────────────
 function renderTable(coins) {
+  const thead = document.getElementById('history-head');
+  if (thead) {
+    thead.innerHTML = `
+      <tr>
+        <th>Time</th>
+        <th>Token</th>
+        <th>Score</th>
+        <th>Entry MC</th>
+        <th>1min MC</th>
+        <th>5min MC</th>
+        <th>15min MC</th>
+        <th>1hr MC</th>
+        <th>Peak MC</th>
+        <th>Peak Mult</th>
+        <th>Status</th>
+      </tr>`;
+  }
+
   let displayCoins = [...(coins || [])];
 
   if (currentTab === 'winners') {
@@ -248,6 +277,7 @@ function renderTable(coins) {
     return `
       <tr>
         <td>${time}</td>
+
         <td class="name-cell">
           <span class="status-dot" style="background:${sc==='high'?'var(--success)':sc==='mid'?'var(--warn)':'var(--danger)'}"></span>
           ${c.name || '?'} <span style="color:var(--text-muted)">$${c.symbol||'?'}</span>
@@ -456,3 +486,56 @@ document.addEventListener('DOMContentLoaded', () => {
   connectWS();
   startTableRefresh();
 });
+
+
+// ── Paper Trades Table ───────────────────────────────────────────────────
+function renderPaperTable(trades) {
+  const thead = document.getElementById('history-head');
+  if (thead) {
+    thead.innerHTML = `
+      <tr>
+        <th>Time</th>
+        <th>Token</th>
+        <th>Status</th>
+        <th>Entry MC</th>
+        <th>Invested (SOL)</th>
+        <th>Half Sold?</th>
+        <th>Exit MC</th>
+        <th>Net Profit</th>
+      </tr>`;
+  }
+
+  const tbody = document.getElementById('history-body');
+  if (!trades || trades.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--text-muted)">No paper trades yet...</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = trades.map(t => {
+    const time = new Date(t.created_at * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+    const entry = t.entry_mc ? `$${(t.entry_mc/1000).toFixed(1)}k` : '-';
+    const exit = t.exit_mc ? `$${(t.exit_mc/1000).toFixed(1)}k` : '-';
+    
+    let statusColor = t.status === 'OPEN' ? 'var(--primary)' : 'var(--text-muted)';
+    let profitColor = t.profit_sol > 0 ? 'var(--success)' : (t.profit_sol < 0 ? 'var(--danger)' : 'var(--text)');
+    let profitText = t.profit_sol > 0 ? `+${t.profit_sol.toFixed(4)}` : t.profit_sol.toFixed(4);
+    
+    let halfSoldBadge = t.sold_half ? `<span style="color:var(--success)">Yes</span>` : `<span style="color:var(--text-muted)">No</span>`;
+    
+    return `
+      <tr>
+        <td>${time}</td>
+        <td class="name-cell" style="cursor:pointer" onclick="copyAddr('${t.mint}', this)">
+          ${t.name || '?'}
+          <span class="addr-hint" style="font-size:10px;margin-left:8px;color:var(--text-muted)">click to copy</span>
+        </td>
+        <td style="color:${statusColor}; font-weight:600">${t.status}</td>
+        <td>${entry}</td>
+        <td>${t.invested_sol.toFixed(2)}</td>
+        <td>${halfSoldBadge}</td>
+        <td>${exit}</td>
+        <td style="color:${profitColor}; font-weight:bold">${profitText} SOL</td>
+      </tr>
+    `;
+  }).join('');
+}
