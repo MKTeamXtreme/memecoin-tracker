@@ -32,7 +32,7 @@ MIN_1MIN_MULT    = 1.0           # Min 1-min mult to enter (1.0 = any, 1.2 = mus
 POLL_SECS        = 8             # How often to check open trade prices (seconds)
 
 # Solana RPC (free public endpoint — replace with paid RPC for better reliability)
-SOLANA_RPC       = "https://api.mainnet-beta.solana.com"
+SOLANA_RPC       = "https://mainnet.helius-rpc.com/?api-key=87eeee41-3eb7-499f-9fad-0c242d9be5bf"
 
 # Jupiter API
 JUPITER_QUOTE    = "https://quote-api.jup.ag/v6/quote"
@@ -162,6 +162,44 @@ async def execute_swap(
 
 
 # ── BUY ───────────────────────────────────────────────────────────────────────
+
+async def check_rug_risk(mint: str) -> tuple[bool, str]:
+    """Check if top holders (excluding curve/raydium) hold too much supply."""
+    try:
+        from solders.pubkey import Pubkey
+        # We need a new client since the main one is used in mainloop maybe, but it's safe to instantiate temporarily
+        c = AsyncClient(SOLANA_RPC)
+        res = await c.get_token_largest_accounts(Pubkey.from_string(mint))
+        await c.close()
+        
+        if not res or not res.value:
+            return False, "Could not fetch holders"
+            
+        # Top holder is usually the curve (often >800M). We exclude the biggest one.
+        # Pump.fun coins have 1 Billion supply.
+        amounts = []
+        for acc in res.value:
+            ui_amt = acc.amount.ui_amount
+            if ui_amt:
+                amounts.append(ui_amt)
+                
+        amounts.sort(reverse=True)
+        if len(amounts) < 2:
+            return False, "Not enough holders to check"
+            
+        # Sum the next top 10 holders (skipping the #1 holder which is the bonding curve/LP)
+        top_10_insider_sum = sum(amounts[1:11])
+        top_10_percent = top_10_insider_sum / 1_000_000_000 * 100
+        
+        # If the top 10 random wallets hold more than 30% of the supply, it's a massive rug risk
+        if top_10_percent > 30.0:
+            return True, f"Top 10 hold {top_10_percent:.1f}%"
+            
+        return False, f"Top 10 hold {top_10_percent:.1f}%"
+    except Exception as e:
+        log.error(f"Rug check failed: {e}")
+        return False, "Check failed"
+
 async def buy_coin(
     session: aiohttp.ClientSession,
     mint: str,
@@ -173,6 +211,12 @@ async def buy_coin(
 ):
     if mint in open_trades:
         return  # already in this trade
+
+    is_rug, rug_msg = await check_rug_risk(mint)
+    if is_rug:
+        log.warning(f"RUG PREVENTED | {name} | {rug_msg} - Aborting buy.")
+        return
+
 
     invest_amt = TRADE_AMOUNT_SOL * 2 if is_news_match else TRADE_AMOUNT_SOL
     news_tag = " [NEWS/HYPE]" if is_news_match else ""
