@@ -182,6 +182,9 @@ async def buy_coin(
         log.error(f"Buy failed for {name}")
         return
 
+    from paper import open_paper_trade
+    open_paper_trade(mint, entry_mc, TRADE_AMOUNT_SOL)
+
     open_trades[mint] = Trade(
         mint=mint, name=name,
         entry_mc=entry_mc,

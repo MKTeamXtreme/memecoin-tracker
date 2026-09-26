@@ -150,9 +150,10 @@ def backfill_paper_trades():
     conn.close()
 
     for mint, initial_mc, peak_mc, mc_24hr, mc_1min, mc_5min, mc_15min, mc_1hr in rows:
-        # 1-min momentum filter (same as autotrader)
-        if mc_1min is not None and mc_1min <= initial_mc * 0.50:
-            continue  # Skipped by autotrader due to instant dumping
+        # 1-min momentum filter (same as autotrader MIN_1MIN_MULT = 1.0)
+        # If it doesn't hold its entry value at 1 minute, autotrader skips it.
+        if mc_1min is not None and (mc_1min / initial_mc) < 1.0:
+            continue  # Skipped by autotrader due to no momentum
 
         open_paper_trade(mint, initial_mc, PAPER_INVEST)
 
