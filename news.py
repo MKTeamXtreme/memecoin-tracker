@@ -71,8 +71,7 @@ async def _fetch_rss_keywords(session: aiohttp.ClientSession) -> Set[str]:
         except Exception:
             continue
     
-    for w in ["TRUMP", "ELON", "GROK", "MAGA", "KAMALA", "BIDEN"]:
-        words.add(w)
+    
         
     return words
 
