@@ -167,6 +167,7 @@ async def check_rug_risk(mint: str) -> tuple[bool, str]:
     """Check if top holders (excluding curve/raydium) hold too much supply."""
     try:
         from solders.pubkey import Pubkey
+        from solana.rpc.async_api import AsyncClient
         # We need a new client since the main one is used in mainloop maybe, but it's safe to instantiate temporarily
         c = AsyncClient(SOLANA_RPC)
         res = await c.get_token_largest_accounts(Pubkey.from_string(mint))
