@@ -187,15 +187,21 @@ async def check_rug_risk(mint: str) -> tuple[bool, str]:
         if len(amounts) < 2:
             return False, "Not enough holders to check"
             
-        # Sum the next top 10 holders (skipping the #1 holder which is the bonding curve/LP)
-        top_10_insider_sum = sum(amounts[1:11])
-        top_10_percent = top_10_insider_sum / 1_000_000_000 * 100
+        # Sum all the remaining top wallets (up to 19 wallets returned by the RPC)
+        insider_sum = sum(amounts[1:])
+        insider_percent = insider_sum / 1_000_000_000 * 100
         
-        # If the top 10 random wallets hold more than 30% of the supply, it's a massive rug risk
-        if top_10_percent > 30.0:
-            return True, f"Top 10 hold {top_10_percent:.1f}%"
+        # Check if any single wallet holds a massive chunk
+        largest_single_holder = amounts[1] / 1_000_000_000 * 100 if len(amounts) > 1 else 0
+        
+        if largest_single_holder > 7.0:
+            return True, f"Single sniper holds {largest_single_holder:.1f}%"
             
-        return False, f"Top 10 hold {top_10_percent:.1f}%"
+        # If the top ~20 wallets hold more than 35% of the supply, it's a bundled rug pull
+        if insider_percent > 35.0:
+            return True, f"Top wallets hold {insider_percent:.1f}%"
+            
+        return False, f"Top wallets hold {insider_percent:.1f}%"
     except Exception as e:
         log.error(f"Rug check failed: {e}")
         return False, "Check failed"
