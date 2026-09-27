@@ -5,7 +5,7 @@ snapshots (5min, 15min, 1hr, 24hr) and compute peak MC for each coin.
 import asyncio
 import time
 import aiohttp
-from database import get_pending_tracking, update_mc_snapshot, mark_tracking_done
+from database import get_pending_tracking, update_mc_snapshot, mark_tracking_done, get_connection
 from paper import update_paper_trade
 
 DEXSCREENER_URL = "https://api.dexscreener.com/latest/dex/tokens/{}"
