@@ -67,13 +67,16 @@ def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float):
         # Close moonbag at 24hr
         is_final = elapsed_secs >= PAPER_EXIT_HRS * 3600
         
+        # Always update unrealized/realized profit on every tick
+        rem_sol = (trade["invested_sol"] / 2.0) if (trade["sold_half"] or updates.get("sold_half")) else trade["invested_sol"]
+        exit_sol = rem_sol * mult
+        total_returned = (trade.get("sold_half_sol") or 0) + (updates.get("sold_half_sol") or 0) + exit_sol
+        
+        updates["profit_sol"] = total_returned - trade["invested_sol"]
+
         if is_final or is_stop_loss:
-            rem_sol  = (trade["invested_sol"] / 2.0) if trade["sold_half"] else trade["invested_sol"]
-            exit_sol = rem_sol * mult
-            total_returned = (trade.get("sold_half_sol") or 0) + (updates.get("sold_half_sol") or 0) + exit_sol
             updates["exit_mc"]    = current_mc
             updates["exit_sol"]   = exit_sol
-            updates["profit_sol"] = total_returned - trade["invested_sol"]
             updates["status"]     = 'CLOSED'
 
         if updates:
@@ -93,7 +96,7 @@ def get_paper_stats():
 
         open_trades   = conn.execute("SELECT COUNT(*) FROM paper_trades WHERE status = 'OPEN'").fetchone()[0]
         closed_trades = conn.execute("SELECT COUNT(*) FROM paper_trades WHERE status = 'CLOSED'").fetchone()[0]
-        profit        = conn.execute("SELECT SUM(profit_sol) FROM paper_trades WHERE status = 'CLOSED'").fetchone()[0] or 0.0
+        profit        = conn.execute("SELECT SUM(profit_sol) FROM paper_trades").fetchone()[0] or 0.0
         return {
             "total_trades": total,
             "open_trades":  open_trades,
