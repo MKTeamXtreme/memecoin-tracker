@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from database import init_db, save_coin, get_recent_coins, get_stats, get_biggest_winners
 from paper import init_paper_db, open_paper_trade, get_paper_stats, get_recent_paper_trades
-from autotrader import on_new_coin, monitor_loop, PAPER_MODE, TRADE_AMOUNT_SOL
+from autotrader import on_new_coin, monitor_loop, PAPER_MODE, TRADE_AMOUNT_SOL, check_rug_risk
 from scorer import score_coin
 from tracker import run_outcome_update
 from news import refresh_trends, _trending_symbols, _news_keywords
@@ -133,6 +133,13 @@ async def process_pairs(pairs: List[dict]) -> List[dict]:
         seen_mints.add(mint)
         raw   = pair_to_raw(pair)
         score, breakdown = score_coin(raw)
+
+        # Catch rug pulls early so they show as red flags in the UI
+        if score >= 70:
+            is_rug, rug_msg = await check_rug_risk(mint)
+            if is_rug:
+                score -= 100
+                breakdown["flags"].append(f"RUG PULL DETECTED: {rug_msg}")
 
         if score < MIN_SCORE:
             continue
