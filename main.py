@@ -134,6 +134,18 @@ async def process_pairs(pairs: List[dict]) -> List[dict]:
         raw   = pair_to_raw(pair)
         score, breakdown = score_coin(raw)
 
+        # Catch fake volume and sniper bundles early
+        vol = pair.get("volume", {}).get("h24", 0)
+        txns = pair.get("txns", {}).get("h24", {})
+        total_txns = txns.get("buys", 0) + txns.get("sells", 0)
+        
+        if score >= 70 and total_txns > 0:
+            avg_trade = vol / total_txns
+            # If the average trade size is massive (>$1500), it's a dev bundling or wash trading
+            if avg_trade > 1500:
+                score -= 100
+                breakdown["flags"].append(f"WASH TRADING / BUNDLE DETECTED: Avg trade ${avg_trade:.0f}")
+
         # Catch rug pulls early so they show as red flags in the UI
         if score >= 70:
             is_rug, rug_msg = await check_rug_risk(mint)
