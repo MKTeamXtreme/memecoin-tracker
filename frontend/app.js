@@ -273,7 +273,7 @@ function renderTable(coins) {
   tbody.innerHTML = displayCoins.map(c => {
     const sc = scoreClass(c.score);
     const mult = fmtMult(c.initial_mc, c.peak_mc);
-    const time = new Date(c.detected_at * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+    const time = new Date(c.detected_at * 1000).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'});
     return `
       <tr>
         <td>${time}</td>
@@ -512,7 +512,7 @@ function renderPaperTable(trades) {
   }
 
   tbody.innerHTML = trades.map(t => {
-    const time = new Date(t.created_at * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+    const time = new Date(t.created_at * 1000).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'});
     const entry = t.entry_mc ? `$${(t.entry_mc/1000).toFixed(1)}k` : '-';
     const exit = t.exit_mc ? `$${(t.exit_mc/1000).toFixed(1)}k` : '-';
     
