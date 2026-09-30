@@ -382,6 +382,36 @@ async def on_new_coin(
             await session.close()
 
 
+# ── WHALE COPY TRADE ─────────────────────────────────────────────────────────
+async def on_whale_buy(
+    session: Optional[aiohttp.ClientSession],
+    mint: str,
+    wallet_pubkey: str = "",
+    private_key_b58: str = ""
+):
+    """
+    Called automatically by whale_tracker.py when a whale buys a coin.
+    Bypasses the 1-min momentum check entirely.
+    """
+    own_session = session is None
+    if own_session:
+        connector = aiohttp.TCPConnector(ssl=False)
+        session = aiohttp.ClientSession(connector=connector)
+
+    try:
+        current_mc = await fetch_current_mc(session, mint)
+        # We need an entry MC for the stop loss math
+        entry_mc = current_mc if current_mc else 20000.0 # fallback
+
+        log.info(f"🚀 INSTANT WHALE COPY | {mint} | MC ${entry_mc/1000:.1f}k")
+        
+        # We tag is_news_match=True just so it doubles the invest amount (high conviction)
+        await buy_coin(session, mint, "Whale Coin", entry_mc, wallet_pubkey, private_key_b58, is_news_match=True)
+    finally:
+        if own_session:
+            await session.close()
+
+
 # ── STANDALONE TEST ───────────────────────────────────────────────────────────
 if __name__ == "__main__":
     log.info(f"AutoTrader starting in {'PAPER' if PAPER_MODE else 'LIVE'} mode")

@@ -34,6 +34,7 @@ from autotrader import on_new_coin, monitor_loop, PAPER_MODE, TRADE_AMOUNT_SOL, 
 from scorer import score_coin
 from tracker import run_outcome_update
 from news import refresh_trends, _trending_symbols, _news_keywords
+from whale_tracker import monitor_whale
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 # Rotate through these queries to keep finding fresh low-cap Solana tokens
@@ -325,6 +326,7 @@ async def lifespan(app: FastAPI):
     track_task  = asyncio.create_task(track_loop())
     news_task   = asyncio.create_task(news_loop())
     trader_task = asyncio.create_task(monitor_loop())
+    whale_task  = asyncio.create_task(monitor_whale())
     mode = 'PAPER' if PAPER_MODE else 'LIVE'
     print(f"[Boot] AutoTrader started in {mode} mode ({TRADE_AMOUNT_SOL} SOL per trade)")
     print("[Boot] Background tasks started")
@@ -336,6 +338,7 @@ async def lifespan(app: FastAPI):
     track_task.cancel()
     news_task.cancel()
     trader_task.cancel()
+    whale_task.cancel()
 
 
 # ── FastAPI app ────────────────────────────────────────────────────────────────
