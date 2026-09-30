@@ -4,7 +4,7 @@ from database import get_connection
 
 # Strategy: sell HALF at 2x, exit MOONBAG at 24hr
 PAPER_INVEST   = 0.02
-PAPER_HALF_AT  = 2.0   # sell half when coin 2x's
+PAPER_HALF_AT  = 1.5   # sell half when coin 1.5x's
 PAPER_EXIT_HRS = 24    # close moonbag after 24 hours
 
 def init_paper_db():
@@ -60,9 +60,9 @@ def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float):
             trade["sold_half"]     = 1
             trade["sold_half_sol"] = sold_half_sol
 
-        # Stop Loss at -50%
+        # Stop Loss at -30%
         mult = current_mc / trade["entry_mc"]
-        is_stop_loss = not trade["sold_half"] and mult <= 0.50
+        is_stop_loss = not trade["sold_half"] and mult <= 0.70
 
         # Close moonbag at 24hr
         is_final = elapsed_secs >= PAPER_EXIT_HRS * 3600
