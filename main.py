@@ -368,6 +368,13 @@ async def api_stats():
 async def api_paper_trades(limit: int = 50):
     return JSONResponse(get_recent_paper_trades(limit))
 
+@app.get("/api/export_db")
+async def api_export_db():
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "coins.db")
+    if os.path.exists(db_path):
+        return FileResponse(db_path, filename="coins.db", media_type="application/octet-stream")
+    return JSONResponse({"error": "Database not found"}, status_code=404)
+
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
