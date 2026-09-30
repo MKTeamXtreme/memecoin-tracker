@@ -308,8 +308,11 @@ function renderStats(s) {
   document.getElementById('s-with-outcomes').textContent = s.brackets?.reduce((a,b) => a + (b.total||0), 0) || 0;
 
   if (s.paper) {
-    document.getElementById('s-paper-pnl').textContent = `${s.paper.net_profit_sol > 0 ? '+' : ''}${s.paper.net_profit_sol.toFixed(2)} SOL`;
-    document.getElementById('s-paper-pnl').style.color = s.paper.net_profit_sol >= 0 ? 'var(--success)' : 'var(--danger)';
+    document.getElementById('s-paper-pnl-v2').textContent = `V2: ${s.paper.v2_profit_sol > 0 ? '+' : ''}${s.paper.v2_profit_sol.toFixed(2)} SOL`;
+    document.getElementById('s-paper-pnl-v2').style.color = s.paper.v2_profit_sol >= 0 ? 'var(--success)' : 'var(--danger)';
+    
+    document.getElementById('s-paper-pnl').textContent = `V1: ${s.paper.v1_profit_sol > 0 ? '+' : ''}${s.paper.v1_profit_sol.toFixed(2)} SOL`;
+    
     document.getElementById('s-paper-trades').textContent = s.paper.total_trades;
     document.getElementById('s-paper-open').textContent = s.paper.open_trades;
     document.getElementById('s-paper-closed').textContent = s.paper.closed_trades;
@@ -526,6 +529,7 @@ function renderPaperTable(trades) {
       <tr>
         <td>${time}</td>
         <td class="name-cell" style="cursor:pointer" onclick="copyAddr('${t.mint}', this)">
+          <span style="font-size:10px; padding:2px 4px; border-radius:4px; margin-right:4px; background: ${t.strategy === 'V2' ? 'var(--primary)' : 'var(--bg-lighter)'}; color: ${t.strategy === 'V2' ? '#fff' : 'var(--text-muted)'}">${t.strategy || 'V1'}</span>
           ${t.name || '?'} ${t.is_news ? '<span title="Grand Slam News Match!" style="margin-left:5px">📰</span>' : ''}
           <span class="addr-hint" style="font-size:10px;margin-left:8px;color:var(--text-muted)">click to copy</span>
         </td>
