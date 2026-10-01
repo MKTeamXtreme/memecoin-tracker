@@ -25,6 +25,14 @@ def init_paper_db():
         )
     """)
     conn.commit()
+
+    # Safely upgrade existing database with strategy column
+    try:
+        conn.execute("ALTER TABLE paper_trades ADD COLUMN strategy TEXT DEFAULT 'V1'")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    
     conn.close()
 
 def open_paper_trade(mint: str, entry_mc: float, amount_sol: float = PAPER_INVEST):
@@ -33,7 +41,7 @@ def open_paper_trade(mint: str, entry_mc: float, amount_sol: float = PAPER_INVES
     try:
         conn.execute(
             """INSERT OR IGNORE INTO paper_trades 
-               (mint, entry_mc, invested_sol, created_at) VALUES (?, ?, ?, ?)""",
+               (mint, entry_mc, invested_sol, created_at, strategy) VALUES (?, ?, ?, ?, 'V2')""",
             (mint, entry_mc, amount_sol, time.time())
         )
         conn.commit()
@@ -96,12 +104,23 @@ def get_paper_stats():
 
         open_trades   = conn.execute("SELECT COUNT(*) FROM paper_trades WHERE status = 'OPEN'").fetchone()[0]
         closed_trades = conn.execute("SELECT COUNT(*) FROM paper_trades WHERE status = 'CLOSED'").fetchone()[0]
-        profit        = conn.execute("SELECT SUM(profit_sol) FROM paper_trades").fetchone()[0] or 0.0
+        
+        try:
+            v1_profit = conn.execute("SELECT SUM(profit_sol) FROM paper_trades WHERE strategy = 'V1'").fetchone()[0] or 0.0
+            v2_profit = conn.execute("SELECT SUM(profit_sol) FROM paper_trades WHERE strategy = 'V2'").fetchone()[0] or 0.0
+            profit = conn.execute("SELECT SUM(profit_sol) FROM paper_trades").fetchone()[0] or 0.0
+        except sqlite3.OperationalError:
+            v1_profit = 0.0
+            v2_profit = 0.0
+            profit = 0.0
+
         return {
             "total_trades": total,
             "open_trades":  open_trades,
             "closed_trades": closed_trades,
-            "net_profit_sol": round(profit, 4)
+            "net_profit_sol": round(profit, 4),
+            "v1_profit_sol": round(v1_profit, 4),
+            "v2_profit_sol": round(v2_profit, 4)
         }
     finally:
         conn.close()
@@ -112,7 +131,7 @@ def get_recent_paper_trades(limit: int = 50):
         rows = conn.execute("""
             SELECT pt.mint, c.name, pt.entry_mc, pt.invested_sol,
                    pt.sold_half, pt.sold_half_sol, pt.profit_sol,
-                   pt.status, pt.created_at, pt.exit_mc, c.score_breakdown
+                   pt.status, pt.created_at, pt.exit_mc, c.score_breakdown, pt.strategy
             FROM paper_trades pt
             LEFT JOIN coins c ON c.mint = pt.mint
             ORDER BY pt.created_at DESC LIMIT ?
@@ -136,7 +155,8 @@ def get_recent_paper_trades(limit: int = 50):
                 "status": r[7],
                 "created_at": r[8],
                 "exit_mc": r[9],
-                "is_news": is_news
+                "is_news": is_news,
+                "strategy": r[11] if len(r) > 11 else "V1"
             })
         return trades
     except sqlite3.OperationalError:
