@@ -6,7 +6,7 @@ from database import get_connection
 PAPER_INVEST      = 0.02
 PAPER_HALF_AT     = 1.5   # sell half when coin 1.5x's
 PAPER_EXIT_HRS    = 24    # close moonbag after 24 hours
-TRAILING_STOP_PCT = 0.30  # Trailing stop loss (30%)
+TRAILING_STOP_PCT = 0.50  # Trailing stop loss (50%)
 
 def init_paper_db():
     conn = get_connection()

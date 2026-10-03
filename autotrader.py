@@ -27,7 +27,7 @@ PAPER_MODE       = True          # Set False to trade real SOL
 TRADE_AMOUNT_SOL = 0.02          # SOL per trade
 HALF_SELL_AT     = 1.5           # Sell half when coin reaches 1.5x
 STOP_LOSS_AT     = 0.70          # Sell everything if coin drops to 70% of entry
-TRAILING_STOP_PCT= 0.30          # Trailing stop loss for the moonbag (30% drop from peak)
+TRAILING_STOP_PCT= 0.50          # Trailing stop loss for the moonbag (50% drop from peak)
 MOONBAG_EXIT_HRS = 24            # Sell moonbag after this many hours
 MIN_1MIN_MULT    = 1.15          # Min 1-min mult to enter (1.0 = any, 1.2 = must be pumping)
 POLL_SECS        = 8             # How often to check open trade prices (seconds)
