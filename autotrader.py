@@ -27,6 +27,7 @@ PAPER_MODE       = True          # Set False to trade real SOL
 TRADE_AMOUNT_SOL = 0.02          # SOL per trade
 HALF_SELL_AT     = 1.5           # Sell half when coin reaches 1.5x
 STOP_LOSS_AT     = 0.70          # Sell everything if coin drops to 70% of entry
+TRAILING_STOP_PCT= 0.30          # Trailing stop loss for the moonbag (30% drop from peak)
 MOONBAG_EXIT_HRS = 24            # Sell moonbag after this many hours
 MIN_1MIN_MULT    = 1.15          # Min 1-min mult to enter (1.0 = any, 1.2 = must be pumping)
 POLL_SECS        = 8             # How often to check open trade prices (seconds)
@@ -60,6 +61,7 @@ class Trade:
     entry_time:   float = field(default_factory=time.time)
     sol_invested: float = TRADE_AMOUNT_SOL
     half_sold:    bool  = False
+    peak_mult:    float = 0.0
     sol_returned: float = 0.0
     closed:       bool  = False
     close_reason: str   = ""
@@ -290,8 +292,9 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
                     continue
 
                 mult = current_mc / trade.entry_mc if trade.entry_mc > 0 else 0
+                trade.peak_mult = max(trade.peak_mult, mult)
 
-                # ── STOP LOSS ─────────────────────────────────────────────
+                # ── INITIAL STOP LOSS ─────────────────────────────────────
                 if mult <= STOP_LOSS_AT and not trade.half_sold:
                     sol_back = trade.sol_invested * mult
                     trade.sol_returned += sol_back
@@ -303,11 +306,21 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
 
                 # ── HALF SELL AT 2x ───────────────────────────────────────
                 elif not trade.half_sold and mult >= HALF_SELL_AT:
-                    sol_back = (trade.sol_invested / 2) * HALF_SELL_AT  # lock in exact 2x on half
+                    sol_back = (trade.sol_invested / 2) * HALF_SELL_AT  # lock in exact amount on half
                     trade.sol_returned += sol_back
                     trade.half_sold = True
                     log.info(f"HALF SELL | {trade.name} | {mult:.2f}x | Locked in {sol_back:.4f} SOL")
-                    await sell_coin(session, trade, 0.5, "half at 2x", wallet_pubkey, private_key_b58)
+                    await sell_coin(session, trade, 0.5, "half sell", wallet_pubkey, private_key_b58)
+
+                # ── TRAILING STOP LOSS (MOONBAG) ──────────────────────────
+                elif trade.half_sold and mult <= trade.peak_mult * (1.0 - TRAILING_STOP_PCT):
+                    sol_back = (trade.sol_invested / 2) * mult
+                    trade.sol_returned += sol_back
+                    trade.closed = True
+                    trade.close_reason = f"Trailing stop at {mult:.2f}x (Peak: {trade.peak_mult:.2f}x)"
+                    log.info(f"TRAILING STOP | {trade.name} | {mult:.2f}x | PnL: {trade.pnl:+.4f} SOL")
+                    await sell_coin(session, trade, 0.5, "trailing stop", wallet_pubkey, private_key_b58)
+                    to_close.append(mint)
 
                 # ── 24HR MOONBAG EXIT ─────────────────────────────────────
                 elif trade.elapsed_hrs >= MOONBAG_EXIT_HRS:
