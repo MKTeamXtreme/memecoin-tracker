@@ -2,9 +2,10 @@ import sqlite3
 import time
 from database import get_connection
 
-# Strategy: sell HALF at 2x, exit MOONBAG at 24hr
+# Strategy: Option A Ladder
 PAPER_INVEST      = 0.02
-PAPER_HALF_AT     = 1.5   # sell half when coin 1.5x's
+PAPER_HALF_AT     = 1.5   # Tier 1: sell 50% when coin reaches 1.5x (returns 0.015 SOL)
+PAPER_TIER2_AT    = 3.0   # Tier 2: sell 25% when coin reaches 3.0x (returns 0.015 SOL)
 PAPER_EXIT_HRS    = 24    # close moonbag after 24 hours
 TRAILING_STOP_PCT = 0.50  # Trailing stop loss (50%)
 
@@ -18,6 +19,8 @@ def init_paper_db():
             invested_sol    REAL    NOT NULL,
             sold_half       INTEGER DEFAULT 0,
             sold_half_sol   REAL    DEFAULT 0,
+            sold_tier2      INTEGER DEFAULT 0,
+            sold_tier2_sol  REAL    DEFAULT 0,
             exit_mc         REAL,
             exit_sol        REAL    DEFAULT 0,
             profit_sol      REAL    DEFAULT 0,
@@ -27,18 +30,30 @@ def init_paper_db():
     """)
     conn.commit()
 
-    # Safely upgrade existing database with strategy column
+    # Safely upgrade existing database with new columns
     try:
         conn.execute("ALTER TABLE paper_trades ADD COLUMN strategy TEXT DEFAULT 'V1'")
         conn.commit()
     except sqlite3.OperationalError:
-        pass  # Column already exists
+        pass
 
     try:
         conn.execute("ALTER TABLE paper_trades ADD COLUMN peak_mc REAL")
         conn.commit()
     except sqlite3.OperationalError:
-        pass  # Column already exists
+        pass
+
+    try:
+        conn.execute("ALTER TABLE paper_trades ADD COLUMN sold_tier2 INTEGER DEFAULT 0")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        conn.execute("ALTER TABLE paper_trades ADD COLUMN sold_tier2_sol REAL DEFAULT 0")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
     
     conn.close()
 
@@ -67,13 +82,21 @@ def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float):
         trade   = dict(trade)
         updates = {}
 
-        # Sell half at 2x
+        # Tier 1: Sell 50% at 1.5x
         if not trade["sold_half"] and current_mc >= trade["entry_mc"] * PAPER_HALF_AT:
-            sold_half_sol = (trade["invested_sol"] / 2.0) * PAPER_HALF_AT  # always lock in exactly 2x on the half
+            sold_half_sol = (trade["invested_sol"] * 0.50) * PAPER_HALF_AT
             updates["sold_half"]     = 1
             updates["sold_half_sol"] = sold_half_sol
             trade["sold_half"]     = 1
             trade["sold_half_sol"] = sold_half_sol
+
+        # Tier 2: Sell 25% at 3.0x
+        if trade["sold_half"] and not trade.get("sold_tier2") and current_mc >= trade["entry_mc"] * PAPER_TIER2_AT:
+            sold_tier2_sol = (trade["invested_sol"] * 0.25) * PAPER_TIER2_AT
+            updates["sold_tier2"]     = 1
+            updates["sold_tier2_sol"] = sold_tier2_sol
+            trade["sold_tier2"]     = 1
+            trade["sold_tier2_sol"] = sold_tier2_sol
 
         # Track peak MC
         peak_mc = max(trade.get("peak_mc") or current_mc, current_mc)
@@ -81,11 +104,20 @@ def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float):
             updates["peak_mc"] = peak_mc
             trade["peak_mc"] = peak_mc
 
-        # Stop Loss at -30% (Initial)
         mult = current_mc / trade["entry_mc"]
+
+        # Determine remaining position fraction
+        if trade.get("sold_tier2") or updates.get("sold_tier2"):
+            rem_frac = 0.25
+        elif trade.get("sold_half") or updates.get("sold_half"):
+            rem_frac = 0.50
+        else:
+            rem_frac = 1.0
+
+        # Stop Loss at -30% (Initial, before Tier 1)
         is_stop_loss = not trade["sold_half"] and mult <= 0.70
 
-        # Trailing Stop Loss (Moonbag) with 1.0x Break-Even Floor
+        # Trailing Stop Loss on moonbag/remainder with 1.0x Break-Even Floor
         peak_mult = peak_mc / trade["entry_mc"]
         trailing_threshold = max(1.0, peak_mult * (1.0 - TRAILING_STOP_PCT))
         is_trailing_stop = trade["sold_half"] and mult <= trailing_threshold
@@ -93,12 +125,16 @@ def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float):
         # Close moonbag at 24hr
         is_final = elapsed_secs >= PAPER_EXIT_HRS * 3600
         
-        # Always update unrealized/realized profit on every tick
-        rem_sol = (trade["invested_sol"] / 2.0) if (trade["sold_half"] or updates.get("sold_half")) else trade["invested_sol"]
+        # Already realized returned SOL from previous tier sales
+        already_locked = (
+            (trade.get("sold_half_sol") or 0) + (updates.get("sold_half_sol") or 0) +
+            (trade.get("sold_tier2_sol") or 0) + (updates.get("sold_tier2_sol") or 0)
+        )
+
+        # Real-time mark-to-market
+        rem_sol = trade["invested_sol"] * rem_frac
         exit_sol = rem_sol * mult
-        total_returned = (trade.get("sold_half_sol") or 0) + (updates.get("sold_half_sol") or 0) + exit_sol
-        
-        updates["profit_sol"] = total_returned - trade["invested_sol"]
+        updates["profit_sol"] = already_locked + exit_sol - trade["invested_sol"]
 
         if is_final or is_stop_loss or is_trailing_stop:
             if is_stop_loss:
@@ -112,11 +148,12 @@ def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float):
                 exit_mult = max(1.0, mult)
                 updates["exit_mc"]    = trade["entry_mc"] * exit_mult
                 updates["exit_sol"]   = rem_sol * exit_mult
-                updates["profit_sol"] = (trade.get("sold_half_sol") or 0) + updates["exit_sol"] - trade["invested_sol"]
+                updates["profit_sol"] = already_locked + updates["exit_sol"] - trade["invested_sol"]
             else:
                 updates["exit_mc"]    = current_mc
                 updates["exit_sol"]   = exit_sol
-            updates["status"]     = 'CLOSED'
+                updates["profit_sol"] = already_locked + exit_sol - trade["invested_sol"]
+            updates["status"] = 'CLOSED'
 
         if updates:
             set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
@@ -162,7 +199,8 @@ def get_recent_paper_trades(limit: int = 50):
         rows = conn.execute("""
             SELECT pt.mint, c.name, pt.entry_mc, pt.invested_sol,
                    pt.sold_half, pt.sold_half_sol, pt.profit_sol,
-                   pt.status, pt.created_at, pt.exit_mc, c.score_breakdown, pt.strategy
+                   pt.status, pt.created_at, pt.exit_mc, c.score_breakdown, pt.strategy,
+                   COALESCE(pt.sold_tier2, 0), COALESCE(pt.sold_tier2_sol, 0)
             FROM paper_trades pt
             LEFT JOIN coins c ON c.mint = pt.mint
             ORDER BY pt.created_at DESC LIMIT ?
@@ -187,7 +225,9 @@ def get_recent_paper_trades(limit: int = 50):
                 "created_at": r[8],
                 "exit_mc": r[9],
                 "is_news": is_news,
-                "strategy": r[11] if len(r) > 11 else "V1"
+                "strategy": r[11] if len(r) > 11 else "V1",
+                "sold_tier2": bool(r[12]),
+                "sold_tier2_sol": r[13]
             })
         return trades
     except sqlite3.OperationalError:
@@ -203,48 +243,37 @@ def backfill_paper_trades():
     conn.execute("DELETE FROM paper_trades")
     conn.commit()
 
-    # Use mc_24hr as the moonbag exit
     rows = conn.execute(
         "SELECT mint, initial_mc, peak_mc, mc_24hr, mc_1min, mc_5min, mc_15min, mc_1hr FROM coins WHERE score = 100 AND initial_mc > 0"
     ).fetchall()
     conn.close()
 
     for mint, initial_mc, peak_mc, mc_24hr, mc_1min, mc_5min, mc_15min, mc_1hr in rows:
-        # 1-min momentum filter (same as autotrader MIN_1MIN_MULT = 1.0)
-        # If it doesn't hold its entry value at 1 minute, autotrader skips it.
-        if mc_1min is not None and (mc_1min / initial_mc) < 1.0:
-            continue  # Skipped by autotrader due to no momentum
+        # 1-min momentum filter: 1.20x gives ~80% win rate
+        if mc_1min is None or (mc_1min / initial_mc) < 1.20:
+            continue
 
         open_paper_trade(mint, initial_mc, PAPER_INVEST)
 
-        # Simulate 2x half-sell
+        # Tier 1 (50% at 1.5x)
         if peak_mc and peak_mc >= initial_mc * PAPER_HALF_AT:
-            update_paper_trade(mint, initial_mc * PAPER_HALF_AT, elapsed_secs=0)
+            update_paper_trade(mint, initial_mc * PAPER_HALF_AT, elapsed_secs=60)
 
-        # Simulate stop-loss using snapshots
-        stop_triggered = False
-        for snap in [mc_1min, mc_5min, mc_15min, mc_1hr]:
-            if snap is not None and snap <= initial_mc * 0.50:
-                update_paper_trade(mint, snap, elapsed_secs=0)  # Trigger stop loss
-                stop_triggered = True
-                break
-        # Simulate trailing stop loss for moonbags
-        trailing_triggered = False
-        if peak_mc and peak_mc >= initial_mc * PAPER_HALF_AT:
-            # check the snapshots after the peak? We can't really know exact order,
-            # but if mc_24hr is much lower than peak, we can simulate the trailing stop
-            for snap in [mc_15min, mc_1hr, mc_24hr]:
-                if snap is not None and snap <= peak_mc * (1.0 - TRAILING_STOP_PCT):
-                    update_paper_trade(mint, snap, elapsed_secs=0)
-                    trailing_triggered = True
-                    break
+        # Tier 2 (25% at 3.0x)
+        if peak_mc and peak_mc >= initial_mc * PAPER_TIER2_AT:
+            update_paper_trade(mint, initial_mc * PAPER_TIER2_AT, elapsed_secs=120)
 
-        if not stop_triggered and not trailing_triggered:
-            if mc_24hr is not None:
-                # Exit moonbag at 24hr price
-                update_paper_trade(mint, mc_24hr, elapsed_secs=PAPER_EXIT_HRS * 3600)
+        # Stop-loss at 0.70x if didn't reach 1.5x
+        if peak_mc is None or peak_mc < initial_mc * PAPER_HALF_AT:
+            update_paper_trade(mint, initial_mc * 0.70, elapsed_secs=180)
+            continue
+
+        # Trailing stop loss on moonbag (50% from peak, min 1.0x break-even floor)
+        trailing_stop_mc = max(initial_mc, peak_mc * (1.0 - TRAILING_STOP_PCT))
+        # Trigger trailing stop
+        update_paper_trade(mint, trailing_stop_mc, elapsed_secs=300)
 
 if __name__ == "__main__":
-    print("Running paper trade backfill (1hr exit strategy)...")
+    print("Running Option A paper trade backfill (50% at 1.5x, 25% at 3x, 25% Moonbag)...")
     backfill_paper_trades()
     print("Done!", get_paper_stats())

@@ -25,9 +25,10 @@ import aiohttp
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 PAPER_MODE       = True          # Set False to trade real SOL
 TRADE_AMOUNT_SOL = 0.02          # SOL per trade
-HALF_SELL_AT     = 1.5           # Sell half when coin reaches 1.5x
-STOP_LOSS_AT     = 0.70          # Sell everything if coin drops to 70% of entry
-TRAILING_STOP_PCT= 0.50          # Trailing stop loss for the moonbag (50% drop from peak)
+TIER1_SELL_AT    = 1.5           # Tier 1: Sell 50% when coin reaches 1.5x (returns 0.015 SOL)
+TIER2_SELL_AT    = 3.0           # Tier 2: Sell 25% when coin reaches 3.0x (returns 0.015 SOL)
+STOP_LOSS_AT     = 0.70          # Sell everything if coin drops to 70% of entry (-30%)
+TRAILING_STOP_PCT= 0.50          # Trailing stop loss for moonbag (50% drop from peak)
 MOONBAG_EXIT_HRS = 24            # Sell moonbag after this many hours
 MIN_1MIN_MULT    = 1.20          # Min 1-min mult to enter (1.20x gives ~80% win rate)
 MAX_OPEN_TRADES  = 6             # Max concurrent open trades for 0.2 SOL bankroll safety
@@ -62,6 +63,7 @@ class Trade:
     entry_time:   float = field(default_factory=time.time)
     sol_invested: float = TRADE_AMOUNT_SOL
     half_sold:    bool  = False
+    tier2_sold:   bool  = False
     peak_mult:    float = 0.0
     sol_returned: float = 0.0
     closed:       bool  = False
@@ -310,7 +312,7 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
                 mult = current_mc / trade.entry_mc if trade.entry_mc > 0 else 0
                 trade.peak_mult = max(trade.peak_mult, mult)
 
-                # ── INITIAL STOP LOSS ─────────────────────────────────────
+                # ── INITIAL STOP LOSS (-30%) ──────────────────────────────
                 if mult <= STOP_LOSS_AT and not trade.half_sold:
                     sol_back = trade.sol_invested * mult
                     trade.sol_returned += sol_back
@@ -320,34 +322,43 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
                     await sell_coin(session, trade, 1.0, "stop loss", wallet_pubkey, private_key_b58)
                     to_close.append(mint)
 
-                # ── HALF SELL AT 2x ───────────────────────────────────────
-                elif not trade.half_sold and mult >= HALF_SELL_AT:
-                    sol_back = (trade.sol_invested / 2) * HALF_SELL_AT  # lock in exact amount on half
+                # ── TIER 1: SELL 50% AT 1.5x ──────────────────────────────
+                elif not trade.half_sold and mult >= TIER1_SELL_AT:
+                    sol_back = (trade.sol_invested * 0.50) * TIER1_SELL_AT  # locks in exactly 0.015 SOL
                     trade.sol_returned += sol_back
                     trade.half_sold = True
-                    log.info(f"HALF SELL | {trade.name} | {mult:.2f}x | Locked in {sol_back:.4f} SOL")
-                    await sell_coin(session, trade, 0.5, "half sell", wallet_pubkey, private_key_b58)
+                    log.info(f"TIER 1 SELL (50%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL")
+                    await sell_coin(session, trade, 0.50, "Tier 1 (50% at 1.5x)", wallet_pubkey, private_key_b58)
+
+                # ── TIER 2: SELL 25% AT 3.0x ──────────────────────────────
+                elif trade.half_sold and not trade.tier2_sold and mult >= TIER2_SELL_AT:
+                    sol_back = (trade.sol_invested * 0.25) * TIER2_SELL_AT  # locks in another 0.015 SOL
+                    trade.sol_returned += sol_back
+                    trade.tier2_sold = True
+                    log.info(f"TIER 2 SELL (25%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (Total Returned: {trade.sol_returned:.4f} SOL)")
+                    await sell_coin(session, trade, 0.25, "Tier 2 (25% at 3.0x)", wallet_pubkey, private_key_b58)
 
                 # ── TRAILING STOP LOSS (MOONBAG) ──────────────────────────
                 elif trade.half_sold and mult <= max(1.0, trade.peak_mult * (1.0 - TRAILING_STOP_PCT)):
-                    # Break-even floor: moonbag never exits below entry (1.0x)
-                    exit_mult = max(1.0, mult)
-                    sol_back = (trade.sol_invested / 2) * exit_mult
+                    # Remaining fraction of original position:
+                    rem_fraction = 0.25 if trade.tier2_sold else 0.50
+                    exit_mult = max(1.0, mult)  # Break-even floor
+                    sol_back = (trade.sol_invested * rem_fraction) * exit_mult
                     trade.sol_returned += sol_back
                     trade.closed = True
                     trade.close_reason = f"Trailing stop at {exit_mult:.2f}x (Peak: {trade.peak_mult:.2f}x)"
-                    log.info(f"TRAILING STOP | {trade.name} | {exit_mult:.2f}x | PnL: {trade.pnl:+.4f} SOL")
-                    await sell_coin(session, trade, 0.5, "trailing stop", wallet_pubkey, private_key_b58)
+                    log.info(f"TRAILING STOP ({int(rem_fraction*100)}%) | {trade.name} | {exit_mult:.2f}x | Final PnL: {trade.pnl:+.4f} SOL")
+                    await sell_coin(session, trade, rem_fraction, "trailing stop exit", wallet_pubkey, private_key_b58)
                     to_close.append(mint)
 
                 # ── 24HR MOONBAG EXIT ─────────────────────────────────────
                 elif trade.elapsed_hrs >= MOONBAG_EXIT_HRS:
-                    rem_fraction = 0.5 if trade.half_sold else 1.0
+                    rem_fraction = 0.25 if trade.tier2_sold else (0.50 if trade.half_sold else 1.0)
                     sol_back = (trade.sol_invested * rem_fraction) * mult
                     trade.sol_returned += sol_back
                     trade.closed = True
                     trade.close_reason = f"24hr exit at {mult:.2f}x"
-                    log.info(f"24HR EXIT | {trade.name} | {mult:.2f}x | PnL: {trade.pnl:+.4f} SOL")
+                    log.info(f"24HR EXIT | {trade.name} | {mult:.2f}x | Final PnL: {trade.pnl:+.4f} SOL")
                     await sell_coin(session, trade, rem_fraction, "24hr moonbag", wallet_pubkey, private_key_b58)
                     to_close.append(mint)
 
