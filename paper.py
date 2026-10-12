@@ -85,9 +85,10 @@ def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float):
         mult = current_mc / trade["entry_mc"]
         is_stop_loss = not trade["sold_half"] and mult <= 0.70
 
-        # Trailing Stop Loss (Moonbag)
+        # Trailing Stop Loss (Moonbag) with 1.0x Break-Even Floor
         peak_mult = peak_mc / trade["entry_mc"]
-        is_trailing_stop = trade["sold_half"] and mult <= peak_mult * (1.0 - TRAILING_STOP_PCT)
+        trailing_threshold = max(1.0, peak_mult * (1.0 - TRAILING_STOP_PCT))
+        is_trailing_stop = trade["sold_half"] and mult <= trailing_threshold
 
         # Close moonbag at 24hr
         is_final = elapsed_secs >= PAPER_EXIT_HRS * 3600
@@ -100,8 +101,21 @@ def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float):
         updates["profit_sol"] = total_returned - trade["invested_sol"]
 
         if is_final or is_stop_loss or is_trailing_stop:
-            updates["exit_mc"]    = current_mc
-            updates["exit_sol"]   = exit_sol
+            if is_stop_loss:
+                # Stop loss triggers at 0.70x (-30%)
+                exit_mult = min(0.70, mult) if mult > 0 else 0.70
+                updates["exit_mc"]    = trade["entry_mc"] * exit_mult
+                updates["exit_sol"]   = trade["invested_sol"] * exit_mult
+                updates["profit_sol"] = updates["exit_sol"] - trade["invested_sol"]
+            elif is_trailing_stop:
+                # Trailing stop locked at drop from peak, with guaranteed 1.0x break-even floor
+                exit_mult = max(1.0, mult)
+                updates["exit_mc"]    = trade["entry_mc"] * exit_mult
+                updates["exit_sol"]   = rem_sol * exit_mult
+                updates["profit_sol"] = (trade.get("sold_half_sol") or 0) + updates["exit_sol"] - trade["invested_sol"]
+            else:
+                updates["exit_mc"]    = current_mc
+                updates["exit_sol"]   = exit_sol
             updates["status"]     = 'CLOSED'
 
         if updates:

@@ -29,7 +29,8 @@ HALF_SELL_AT     = 1.5           # Sell half when coin reaches 1.5x
 STOP_LOSS_AT     = 0.70          # Sell everything if coin drops to 70% of entry
 TRAILING_STOP_PCT= 0.50          # Trailing stop loss for the moonbag (50% drop from peak)
 MOONBAG_EXIT_HRS = 24            # Sell moonbag after this many hours
-MIN_1MIN_MULT    = 1.15          # Min 1-min mult to enter (1.0 = any, 1.2 = must be pumping)
+MIN_1MIN_MULT    = 1.20          # Min 1-min mult to enter (1.20x gives ~80% win rate)
+MAX_OPEN_TRADES  = 6             # Max concurrent open trades for 0.2 SOL bankroll safety
 POLL_SECS        = 8             # How often to check open trade prices (seconds)
 
 # Solana RPC (free public endpoint — replace with paid RPC for better reliability)
@@ -221,6 +222,21 @@ async def buy_coin(
     if mint in open_trades:
         return  # already in this trade
 
+    # Capital rotation for 0.2 SOL wallet safety: cap concurrent trades
+    if len(open_trades) >= MAX_OPEN_TRADES:
+        moonbags = [t for t in open_trades.values() if t.half_sold]
+        if moonbags:
+            weakest = min(moonbags, key=lambda t: t.peak_mult)
+            log.info(f"CAPITAL ROTATION | Closing weakest moonbag {weakest.name} to free capital for {name}")
+            await sell_coin(session, weakest, 0.5, "capital rotation", wallet_pubkey, private_key_b58)
+            weakest.closed = True
+            weakest.close_reason = "Rotated out for fresh runner"
+            if weakest.mint in open_trades:
+                closed_trades.append(open_trades.pop(weakest.mint))
+        else:
+            log.warning(f"MAX TRADES ({MAX_OPEN_TRADES}) REACHED | Skipping {name} to preserve cashflow.")
+            return
+
     is_rug, rug_msg = await check_rug_risk(mint)
     if is_rug:
         log.warning(f"RUG PREVENTED | {name} | {rug_msg} - Aborting buy.")
@@ -313,12 +329,14 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
                     await sell_coin(session, trade, 0.5, "half sell", wallet_pubkey, private_key_b58)
 
                 # ── TRAILING STOP LOSS (MOONBAG) ──────────────────────────
-                elif trade.half_sold and mult <= trade.peak_mult * (1.0 - TRAILING_STOP_PCT):
-                    sol_back = (trade.sol_invested / 2) * mult
+                elif trade.half_sold and mult <= max(1.0, trade.peak_mult * (1.0 - TRAILING_STOP_PCT)):
+                    # Break-even floor: moonbag never exits below entry (1.0x)
+                    exit_mult = max(1.0, mult)
+                    sol_back = (trade.sol_invested / 2) * exit_mult
                     trade.sol_returned += sol_back
                     trade.closed = True
-                    trade.close_reason = f"Trailing stop at {mult:.2f}x (Peak: {trade.peak_mult:.2f}x)"
-                    log.info(f"TRAILING STOP | {trade.name} | {mult:.2f}x | PnL: {trade.pnl:+.4f} SOL")
+                    trade.close_reason = f"Trailing stop at {exit_mult:.2f}x (Peak: {trade.peak_mult:.2f}x)"
+                    log.info(f"TRAILING STOP | {trade.name} | {exit_mult:.2f}x | PnL: {trade.pnl:+.4f} SOL")
                     await sell_coin(session, trade, 0.5, "trailing stop", wallet_pubkey, private_key_b58)
                     to_close.append(mint)
 
