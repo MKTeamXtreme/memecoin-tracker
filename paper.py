@@ -137,22 +137,9 @@ def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float):
         updates["profit_sol"] = already_locked + exit_sol - trade["invested_sol"]
 
         if is_final or is_stop_loss or is_trailing_stop:
-            if is_stop_loss:
-                # Stop loss triggers at 0.70x (-30%)
-                exit_mult = min(0.70, mult) if mult > 0 else 0.70
-                updates["exit_mc"]    = trade["entry_mc"] * exit_mult
-                updates["exit_sol"]   = trade["invested_sol"] * exit_mult
-                updates["profit_sol"] = updates["exit_sol"] - trade["invested_sol"]
-            elif is_trailing_stop:
-                # Trailing stop locked at drop from peak, with guaranteed 1.0x break-even floor
-                exit_mult = max(1.0, mult)
-                updates["exit_mc"]    = trade["entry_mc"] * exit_mult
-                updates["exit_sol"]   = rem_sol * exit_mult
-                updates["profit_sol"] = already_locked + updates["exit_sol"] - trade["invested_sol"]
-            else:
-                updates["exit_mc"]    = current_mc
-                updates["exit_sol"]   = exit_sol
-                updates["profit_sol"] = already_locked + exit_sol - trade["invested_sol"]
+            updates["exit_mc"] = current_mc
+            updates["exit_sol"] = exit_sol
+            updates["profit_sol"] = already_locked + exit_sol - trade["invested_sol"]
             updates["status"] = 'CLOSED'
 
         if updates:

@@ -21,6 +21,7 @@ from typing import Dict, Optional
 from dataclasses import dataclass, field
 
 import aiohttp
+from paper import update_paper_trade
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 PAPER_MODE       = True          # Set False to trade real SOL
@@ -311,6 +312,10 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
 
                 mult = current_mc / trade.entry_mc if trade.entry_mc > 0 else 0
                 trade.peak_mult = max(trade.peak_mult, mult)
+                elapsed_secs = time.time() - trade.entry_time
+
+                # Sync paper trading database in real time with actual current_mc
+                update_paper_trade(mint, current_mc, elapsed_secs=elapsed_secs)
 
                 # ── INITIAL STOP LOSS (-30%) ──────────────────────────────
                 if mult <= STOP_LOSS_AT and not trade.half_sold:
@@ -342,12 +347,12 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
                 elif trade.half_sold and mult <= max(1.0, trade.peak_mult * (1.0 - TRAILING_STOP_PCT)):
                     # Remaining fraction of original position:
                     rem_fraction = 0.25 if trade.tier2_sold else 0.50
-                    exit_mult = max(1.0, mult)  # Break-even floor
-                    sol_back = (trade.sol_invested * rem_fraction) * exit_mult
+                    # Real market return: sell at current market price (mult)
+                    sol_back = (trade.sol_invested * rem_fraction) * mult
                     trade.sol_returned += sol_back
                     trade.closed = True
-                    trade.close_reason = f"Trailing stop at {exit_mult:.2f}x (Peak: {trade.peak_mult:.2f}x)"
-                    log.info(f"TRAILING STOP ({int(rem_fraction*100)}%) | {trade.name} | {exit_mult:.2f}x | Final PnL: {trade.pnl:+.4f} SOL")
+                    trade.close_reason = f"Trailing stop at {mult:.2f}x (Peak: {trade.peak_mult:.2f}x)"
+                    log.info(f"TRAILING STOP ({int(rem_fraction*100)}%) | {trade.name} | {mult:.2f}x | Final PnL: {trade.pnl:+.4f} SOL")
                     await sell_coin(session, trade, rem_fraction, "trailing stop exit", wallet_pubkey, private_key_b58)
                     to_close.append(mint)
 
