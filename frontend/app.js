@@ -20,6 +20,8 @@ function switchTab(tab) {
   document.getElementById('tab-winners').classList.toggle('active', tab === 'winners');
   const paperTab = document.getElementById('tab-paper');
   if (paperTab) paperTab.classList.toggle('active', tab === 'paper');
+  const paperV3Tab = document.getElementById('tab-paper-v3');
+  if (paperV3Tab) paperV3Tab.classList.toggle('active', tab === 'paper-v3');
   
   if (tab === 'winners') {
     fetch(`${API_BASE}/biggest_winners`)
@@ -29,8 +31,18 @@ function switchTab(tab) {
         renderTable(winnerCoins);
       })
       .catch(() => renderTable(allCoins));
+  } else if (tab === 'paper-v3') {
+    fetch(`${API_BASE}/paper_trades?limit=100`)
+      .then(r => r.json())
+      .then(trades => {
+        const v3Trades = trades.filter(t => t.strategy === 'V3');
+        renderPaperTable(v3Trades);
+      })
+      .catch(() => {
+        document.getElementById('history-body').innerHTML = '<tr><td colspan="10" style="text-align:center">Error loading V3 paper trades</td></tr>';
+      });
   } else if (tab === 'paper') {
-    fetch(`${API_BASE}/paper_trades`)
+    fetch(`${API_BASE}/paper_trades?limit=100`)
       .then(r => r.json())
       .then(trades => {
         renderPaperTable(trades);
