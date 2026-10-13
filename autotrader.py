@@ -259,7 +259,7 @@ async def buy_coin(
         return
 
     from paper import open_paper_trade
-    open_paper_trade(mint, entry_mc, invest_amt)
+    open_paper_trade(mint, entry_mc, invest_amt, strategy="V3")
 
     open_trades[mint] = Trade(
         is_news_match=is_news_match,

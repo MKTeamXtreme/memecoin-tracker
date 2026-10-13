@@ -57,14 +57,14 @@ def init_paper_db():
     
     conn.close()
 
-def open_paper_trade(mint: str, entry_mc: float, amount_sol: float = PAPER_INVEST):
+def open_paper_trade(mint: str, entry_mc: float, amount_sol: float = PAPER_INVEST, strategy: str = "V3"):
     if entry_mc <= 0: return
     conn = get_connection()
     try:
         conn.execute(
             """INSERT OR IGNORE INTO paper_trades 
-               (mint, entry_mc, invested_sol, created_at, strategy) VALUES (?, ?, ?, ?, 'V2')""",
-            (mint, entry_mc, amount_sol, time.time())
+               (mint, entry_mc, invested_sol, created_at, strategy) VALUES (?, ?, ?, ?, ?)""",
+            (mint, entry_mc, amount_sol, time.time(), strategy)
         )
         conn.commit()
     finally:
@@ -155,7 +155,7 @@ def get_paper_stats():
         try:
             total = conn.execute("SELECT COUNT(*) FROM paper_trades").fetchone()[0]
         except sqlite3.OperationalError:
-            return {"total_trades": 0, "open_trades": 0, "closed_trades": 0, "net_profit_sol": 0.0}
+            return {"total_trades": 0, "open_trades": 0, "closed_trades": 0, "net_profit_sol": 0.0, "v1_profit_sol": 0.0, "v2_profit_sol": 0.0, "v3_profit_sol": 0.0}
 
         open_trades   = conn.execute("SELECT COUNT(*) FROM paper_trades WHERE status = 'OPEN'").fetchone()[0]
         closed_trades = conn.execute("SELECT COUNT(*) FROM paper_trades WHERE status = 'CLOSED'").fetchone()[0]
@@ -163,10 +163,12 @@ def get_paper_stats():
         try:
             v1_profit = conn.execute("SELECT SUM(profit_sol) FROM paper_trades WHERE strategy = 'V1'").fetchone()[0] or 0.0
             v2_profit = conn.execute("SELECT SUM(profit_sol) FROM paper_trades WHERE strategy = 'V2'").fetchone()[0] or 0.0
+            v3_profit = conn.execute("SELECT SUM(profit_sol) FROM paper_trades WHERE strategy = 'V3'").fetchone()[0] or 0.0
             profit = conn.execute("SELECT SUM(profit_sol) FROM paper_trades").fetchone()[0] or 0.0
         except sqlite3.OperationalError:
             v1_profit = 0.0
             v2_profit = 0.0
+            v3_profit = 0.0
             profit = 0.0
 
         return {
@@ -175,7 +177,8 @@ def get_paper_stats():
             "closed_trades": closed_trades,
             "net_profit_sol": round(profit, 4),
             "v1_profit_sol": round(v1_profit, 4),
-            "v2_profit_sol": round(v2_profit, 4)
+            "v2_profit_sol": round(v2_profit, 4),
+            "v3_profit_sol": round(v3_profit, 4)
         }
     finally:
         conn.close()
