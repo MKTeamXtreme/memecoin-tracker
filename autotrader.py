@@ -33,7 +33,7 @@ TRAILING_STOP_PCT= 0.50          # Trailing stop loss for moonbag (50% drop from
 MOONBAG_EXIT_HRS = 24            # Sell moonbag after this many hours
 MIN_1MIN_MULT    = 1.20          # Min 1-min mult to enter (1.20x gives ~80% win rate)
 MAX_OPEN_TRADES  = 6             # Max concurrent open trades for 0.2 SOL bankroll safety
-POLL_SECS        = 8             # How often to check open trade prices (seconds)
+POLL_SECS        = 3             # How often to check open trade prices (seconds)
 
 # Solana RPC (free public endpoint — replace with paid RPC for better reliability)
 SOLANA_RPC       = "https://mainnet.helius-rpc.com/?api-key=87eeee41-3eb7-499f-9fad-0c242d9be5bf"
@@ -206,8 +206,8 @@ async def check_rug_risk(mint: str) -> tuple[bool, str]:
             
         # 2. Top 2 holders combined (catches 2-wallet split dev snipes)
         top2 = sum(holders[:2]) / 1_000_000_000 * 100 if len(holders) >= 2 else top1
-        if top2 > 7.0:
-            return True, f"Top 2 snipers hold {top2:.1f}% (>7.0% dev split risk)"
+        if top2 > 6.5:
+            return True, f"Top 2 snipers hold {top2:.1f}% (>6.5% dev split risk)"
             
         # 3. Top 3 holders combined (catches 3-wallet coordinated bundle)
         top3 = sum(holders[:3]) / 1_000_000_000 * 100 if len(holders) >= 3 else top2

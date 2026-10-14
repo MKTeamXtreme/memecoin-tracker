@@ -64,8 +64,9 @@ POLL_INTERVAL  = 5       # seconds between polls (reduced from 15 for faster det
 TRACK_INTERVAL = 60      # seconds between outcome updates
 
 # Only surface coins in this MC range
-MC_MIN = 10_000          # raised from $2k — sub-$10k coins showed 0 wins in trial data
-MC_MAX = 1_000_000
+MC_MIN  = 10_000          # raised from $2k — sub-$10k coins showed 0 wins in trial data
+MC_MAX  = 1_000_000
+LIQ_MIN = 2_500           # Minimum $2.5k liquidity to reject drained/ghost pools
 
 FRONTEND_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "frontend")
 
@@ -122,6 +123,10 @@ async def process_pairs(pairs: List[dict]) -> List[dict]:
 
         mc = float(pair.get("marketCap") or pair.get("fdv") or 0)
         if mc < MC_MIN or mc > MC_MAX:
+            continue
+
+        liq = float((pair.get("liquidity") or {}).get("usd") or 0)
+        if liq < LIQ_MIN:
             continue
 
         # Only tokens created in the last 24 hours
