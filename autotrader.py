@@ -28,7 +28,7 @@ PAPER_MODE       = True          # Set False to trade real SOL
 TRADE_AMOUNT_SOL = 0.02          # SOL per trade
 TIER1_SELL_AT    = 1.5           # Tier 1: Sell 50% when coin reaches 1.5x (returns 0.015 SOL)
 TIER2_SELL_AT    = 3.0           # Tier 2: Sell 25% when coin reaches 3.0x (returns 0.015 SOL)
-STOP_LOSS_AT     = 0.70          # Sell everything if coin drops to 70% of entry (-30%)
+STOP_LOSS_AT     = 0.75          # Sell everything if coin drops to 75% of entry (-25%)
 TRAILING_STOP_PCT= 0.50          # Trailing stop loss for moonbag (50% drop from peak)
 MOONBAG_EXIT_HRS = 24            # Sell moonbag after this many hours
 MIN_1MIN_MULT    = 1.20          # Min 1-min mult to enter (1.20x gives ~80% win rate)
@@ -170,11 +170,13 @@ async def execute_swap(
 # ── BUY ───────────────────────────────────────────────────────────────────────
 
 async def check_rug_risk(mint: str) -> tuple[bool, str]:
-    """Check if top holders (excluding curve/raydium) hold too much supply."""
+    """
+    Check if top holders (excluding bonding curve/Raydium pool) hold dangerous supply.
+    Detects split-wallet dev sniper bundles and cabal clusters.
+    """
     try:
         from solders.pubkey import Pubkey
         from solana.rpc.async_api import AsyncClient
-        # We need a new client since the main one is used in mainloop maybe, but it's safe to instantiate temporarily
         c = AsyncClient(SOLANA_RPC)
         res = await c.get_token_largest_accounts(Pubkey.from_string(mint))
         await c.close()
@@ -182,8 +184,8 @@ async def check_rug_risk(mint: str) -> tuple[bool, str]:
         if not res or not res.value:
             return False, "Could not fetch holders"
             
-        # Top holder is usually the curve (often >800M). We exclude the biggest one.
-        # Pump.fun coins have 1 Billion supply.
+        # Pump.fun coins have 1 Billion total supply (1,000,000,000).
+        # Top account (amounts[0]) is the bonding curve / pool (~800M+).
         amounts = []
         for acc in res.value:
             ui_amt = acc.amount.ui_amount
@@ -194,21 +196,35 @@ async def check_rug_risk(mint: str) -> tuple[bool, str]:
         if len(amounts) < 2:
             return False, "Not enough holders to check"
             
-        # Sum all the remaining top wallets (up to 19 wallets returned by the RPC)
-        insider_sum = sum(amounts[1:])
-        insider_percent = insider_sum / 1_000_000_000 * 100
+        # Non-curve holders (excluding the liquidity pool / curve at index 0)
+        holders = amounts[1:]
         
-        # Check if any single wallet holds a massive chunk
-        largest_single_holder = amounts[1] / 1_000_000_000 * 100 if len(amounts) > 1 else 0
-        
-        if largest_single_holder > 7.0:
-            return True, f"Single sniper holds {largest_single_holder:.1f}%"
+        # 1. Single largest holder check (max 4.5% of total supply)
+        top1 = holders[0] / 1_000_000_000 * 100 if len(holders) > 0 else 0
+        if top1 > 4.5:
+            return True, f"Single sniper holds {top1:.1f}% (>4.5%)"
             
-        # If the top ~20 wallets hold more than 35% of the supply, it's a bundled rug pull
-        if insider_percent > 35.0:
-            return True, f"Top wallets hold {insider_percent:.1f}%"
+        # 2. Top 2 holders combined (catches 2-wallet split dev snipes)
+        top2 = sum(holders[:2]) / 1_000_000_000 * 100 if len(holders) >= 2 else top1
+        if top2 > 7.0:
+            return True, f"Top 2 snipers hold {top2:.1f}% (>7.0% dev split risk)"
             
-        return False, f"Top wallets hold {insider_percent:.1f}%"
+        # 3. Top 3 holders combined (catches 3-wallet coordinated bundle)
+        top3 = sum(holders[:3]) / 1_000_000_000 * 100 if len(holders) >= 3 else top2
+        if top3 > 9.5:
+            return True, f"Top 3 snipers hold {top3:.1f}% (>9.5% bundle risk)"
+            
+        # 4. Top 5 holders combined (catches multi-wallet dev cluster)
+        top5 = sum(holders[:5]) / 1_000_000_000 * 100 if len(holders) >= 5 else top3
+        if top5 > 12.0:
+            return True, f"Top 5 snipers hold {top5:.1f}% (>12.0% cluster risk)"
+            
+        # 5. Top ~20 wallets combined (catches cabal-distributed supply)
+        top_all = sum(holders) / 1_000_000_000 * 100
+        if top_all > 20.0:
+            return True, f"Top wallets hold {top_all:.1f}% (>20.0% cabal risk)"
+            
+        return False, f"Clean supply (Top1={top1:.1f}%, Top5={top5:.1f}%, Total={top_all:.1f}%)"
     except Exception as e:
         log.error(f"Rug check failed: {e}")
         return False, "Check failed"
@@ -423,7 +439,8 @@ async def on_new_coin(
             log.info(f"SKIP (1min mult {mult_1min:.2f}x < {MIN_1MIN_MULT}x) | {name}")
             return
 
-        await buy_coin(session, mint, name, entry_mc, wallet_pubkey, private_key_b58)
+        actual_entry = mc_1min if mc_1min else entry_mc
+        await buy_coin(session, mint, name, actual_entry, wallet_pubkey, private_key_b58)
     finally:
         if own_session:
             await session.close()
