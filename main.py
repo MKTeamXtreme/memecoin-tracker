@@ -39,19 +39,22 @@ from whale_tracker import monitor_whale
 # ── Constants ─────────────────────────────────────────────────────────────────
 # Rotate through these queries to keep finding fresh low-cap Solana tokens
 SEARCH_QUERIES = [
-    "https://api.dexscreener.com/latest/dex/search?q=solana%20new",
     "https://api.dexscreener.com/latest/dex/search?q=pump%20sol",
+    "https://api.dexscreener.com/latest/dex/search?q=solana%20new",
+    "https://api.dexscreener.com/latest/dex/search?q=pump.fun",
+    "https://api.dexscreener.com/latest/dex/search?q=ai%20sol",
     "https://api.dexscreener.com/latest/dex/search?q=meme%20solana",
+    "https://api.dexscreener.com/latest/dex/search?q=cat%20sol",
+    "https://api.dexscreener.com/latest/dex/search?q=dog%20sol",
     "https://api.dexscreener.com/latest/dex/search?q=sol%20token",
     "https://api.dexscreener.com/latest/dex/search?q=raydium%20sol",
     "https://api.dexscreener.com/latest/dex/search?q=pepe%20sol",
     "https://api.dexscreener.com/latest/dex/search?q=inu%20solana",
     "https://api.dexscreener.com/latest/dex/search?q=coin%20sol",
-    "https://api.dexscreener.com/latest/dex/search?q=baby%20sol",
-    "https://api.dexscreener.com/latest/dex/search?q=floki%20sol",
 ]
 
 DEXSCREENER_PROFILES  = "https://api.dexscreener.com/token-profiles/latest/v1"
+DEXSCREENER_BOOSTS     = "https://api.dexscreener.com/token-boosts/latest/v1"
 DEXSCREENER_PAIRS_URL = "https://api.dexscreener.com/latest/dex/tokens/{}"
 
 HEADERS = {
@@ -125,9 +128,13 @@ async def process_pairs(pairs: List[dict]) -> List[dict]:
         if mc < MC_MIN or mc > MC_MAX:
             continue
 
-        liq = float((pair.get("liquidity") or {}).get("usd") or 0)
-        if liq < LIQ_MIN:
-            continue
+        # Liquidity check: only enforce on external AMM pools (Meteora/Raydium) where devs create empty ghost pools.
+        # Pump.fun bonding curve tokens have protocol-backed liquidity and report liquidity: null on DexScreener.
+        is_pumpfun = pair.get("dexId") == "pumpfun" or mint.endswith("pump")
+        if not is_pumpfun:
+            liq = float((pair.get("liquidity") or {}).get("usd") or 0)
+            if liq < LIQ_MIN:
+                continue
 
         # Only tokens created in the last 24 hours
         created_ms = pair.get("pairCreatedAt")
@@ -216,33 +223,32 @@ async def poll_search(session: aiohttp.ClientSession, url: str) -> List[dict]:
 # ── Source B: token profiles (newest listings) ─────────────────────────────────
 async def poll_profiles(session: aiohttp.ClientSession) -> List[dict]:
     found = []
-    try:
-        async with session.get(
-            DEXSCREENER_PROFILES, timeout=aiohttp.ClientTimeout(total=15)
-        ) as resp:
-            if resp.status == 200:
-                profiles = await resp.json(content_type=None)
-                sol_profiles = [p for p in (profiles or []) if p.get("chainId") == "solana"]
-                for profile in sol_profiles[:20]:
-                    addr = profile.get("tokenAddress", "")
-                    if addr and addr not in seen_mints:
-                        try:
-                            async with session.get(
-                                DEXSCREENER_PAIRS_URL.format(addr),
-                                timeout=aiohttp.ClientTimeout(total=10)
-                            ) as pr:
-                                if pr.status == 200:
-                                    pdata = await pr.json(content_type=None)
-                                    pairs = pdata.get("pairs") or []
-                                    new = await process_pairs(pairs)
-                                    found.extend(new)
-                        except Exception:
-                            pass
-                        await asyncio.sleep(0.15)
-    except asyncio.CancelledError:
-        raise
-    except Exception as e:
-        print(f"[Poll] Profiles error: {e}")
+    for endpoint in [DEXSCREENER_PROFILES, DEXSCREENER_BOOSTS]:
+        try:
+            async with session.get(endpoint, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    items = await resp.json(content_type=None)
+                    sol_items = [p for p in (items or []) if p.get("chainId") == "solana"]
+                    for item in sol_items[:20]:
+                        addr = item.get("tokenAddress", "")
+                        if addr and addr not in seen_mints:
+                            try:
+                                async with session.get(
+                                    DEXSCREENER_PAIRS_URL.format(addr),
+                                    timeout=aiohttp.ClientTimeout(total=10)
+                                ) as pr:
+                                    if pr.status == 200:
+                                        pdata = await pr.json(content_type=None)
+                                        pairs = pdata.get("pairs") or []
+                                        new = await process_pairs(pairs)
+                                        found.extend(new)
+                            except Exception:
+                                pass
+                            await asyncio.sleep(0.12)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            pass
     return found
 
 
