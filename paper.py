@@ -82,17 +82,17 @@ def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float):
         trade   = dict(trade)
         updates = {}
 
-        # Tier 1: Sell 50% at 1.5x
+        # Tier 1: Sell 67% at 1.5x (100% capital returned)
         if not trade["sold_half"] and current_mc >= trade["entry_mc"] * PAPER_HALF_AT:
-            sold_half_sol = (trade["invested_sol"] * 0.50) * PAPER_HALF_AT
+            sold_half_sol = (trade["invested_sol"] * 0.67) * PAPER_HALF_AT
             updates["sold_half"]     = 1
             updates["sold_half_sol"] = sold_half_sol
             trade["sold_half"]     = 1
             trade["sold_half_sol"] = sold_half_sol
 
-        # Tier 2: Sell 25% at 3.0x
+        # Tier 2: Sell 16.5% at 3.0x
         if trade["sold_half"] and not trade.get("sold_tier2") and current_mc >= trade["entry_mc"] * PAPER_TIER2_AT:
-            sold_tier2_sol = (trade["invested_sol"] * 0.25) * PAPER_TIER2_AT
+            sold_tier2_sol = (trade["invested_sol"] * 0.165) * PAPER_TIER2_AT
             updates["sold_tier2"]     = 1
             updates["sold_tier2_sol"] = sold_tier2_sol
             trade["sold_tier2"]     = 1
@@ -108,14 +108,14 @@ def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float):
 
         # Determine remaining position fraction
         if trade.get("sold_tier2") or updates.get("sold_tier2"):
-            rem_frac = 0.25
+            rem_frac = 0.165
         elif trade.get("sold_half") or updates.get("sold_half"):
-            rem_frac = 0.50
+            rem_frac = 0.33
         else:
             rem_frac = 1.0
 
-        # Stop Loss at -30% (Initial, before Tier 1)
-        is_stop_loss = not trade["sold_half"] and mult <= 0.70
+        # Stop Loss at -25% (Initial, before Tier 1)
+        is_stop_loss = not trade["sold_half"] and mult <= 0.75
 
         # Trailing Stop Loss on moonbag/remainder with 1.0x Break-Even Floor
         peak_mult = peak_mc / trade["entry_mc"]
