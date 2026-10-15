@@ -62,9 +62,10 @@ HEADERS = {
     "Accept": "application/json",
 }
 
-MIN_SCORE      = 35
-POLL_INTERVAL  = 5       # seconds between polls (reduced from 15 for faster detection)
-TRACK_INTERVAL = 60      # seconds between outcome updates
+MIN_SCORE        = 35
+MIN_TRADE_SCORE  = 80     # Coins with score >= 80 enter 1-minute momentum evaluation
+POLL_INTERVAL    = 5      # seconds between polls (reduced from 15 for faster detection)
+TRACK_INTERVAL   = 60     # seconds between outcome updates
 
 # Only surface coins in this MC range
 MC_MIN  = 10_000          # raised from $2k — sub-$10k coins showed 0 wins in trial data
@@ -191,7 +192,7 @@ async def process_pairs(pairs: List[dict]) -> List[dict]:
 
         if save_coin(record):
             new_found.append(record)
-            if score == 100:
+            if score >= MIN_TRADE_SCORE:
                 asyncio.create_task(on_new_coin(
                     session=None, mint=mint,
                     name=raw["name"], entry_mc=mc
