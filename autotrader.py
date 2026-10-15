@@ -33,7 +33,7 @@ STOP_LOSS_AT     = 0.75          # Sell everything if coin drops to 75% of entry
 TRAILING_STOP_PCT= 0.50          # Trailing stop loss for moonbag (50% drop from peak)
 MOONBAG_EXIT_HRS = 24            # Sell moonbag after this many hours
 MIN_1MIN_MULT    = 1.20          # Min 1-min mult to enter (1.20x gives ~80% win rate)
-MAX_OPEN_TRADES  = 6             # Max concurrent open trades for 0.2 SOL bankroll safety
+MAX_OPEN_TRADES  = 4             # Max concurrent open trades for 0.2 SOL bankroll safety (max 0.08 SOL at risk)
 POLL_SECS        = 3             # How often to check open trade prices (seconds)
 
 # Solana RPC (free public endpoint — replace with paid RPC for better reliability)
