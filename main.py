@@ -160,12 +160,11 @@ async def process_pairs(pairs: List[dict]) -> List[dict]:
                 score -= 100
                 breakdown["flags"].append(f"WASH TRADING / BUNDLE DETECTED: Avg trade ${avg_trade:.0f}")
 
-        # Catch rug pulls early so they show as red flags in the UI
+        # Flag initial holder risk in the UI (actual buy-blocking rug check runs at Minute 1 in buy_coin)
         if score >= 70:
             is_rug, rug_msg = await check_rug_risk(mint)
             if is_rug:
-                score -= 100
-                breakdown["flags"].append(f"RUG PULL DETECTED: {rug_msg}")
+                breakdown["flags"].append(f"INITIAL SUPPLY NOTE: {rug_msg}")
 
         if score < MIN_SCORE:
             continue
@@ -192,7 +191,8 @@ async def process_pairs(pairs: List[dict]) -> List[dict]:
 
         if save_coin(record):
             new_found.append(record)
-            if score >= MIN_TRADE_SCORE:
+            is_golden_zone = (score >= 60 and 20_000 <= mc <= 32_000)
+            if score >= MIN_TRADE_SCORE or is_golden_zone:
                 asyncio.create_task(on_new_coin(
                     session=None, mint=mint,
                     name=raw["name"], entry_mc=mc

@@ -208,23 +208,23 @@ async def check_rug_risk(mint: str) -> tuple[bool, str]:
             
         # 2. Top 2 holders combined (catches 2-wallet split dev snipes)
         top2 = sum(holders[:2]) / 1_000_000_000 * 100 if len(holders) >= 2 else top1
-        if top2 > 6.5:
-            return True, f"Top 2 snipers hold {top2:.1f}% (>6.5% dev split risk)"
+        if top2 > 7.5:
+            return True, f"Top 2 snipers hold {top2:.1f}% (>7.5% dev split risk)"
             
         # 3. Top 3 holders combined (catches 3-wallet coordinated bundle)
         top3 = sum(holders[:3]) / 1_000_000_000 * 100 if len(holders) >= 3 else top2
-        if top3 > 9.5:
-            return True, f"Top 3 snipers hold {top3:.1f}% (>9.5% bundle risk)"
+        if top3 > 10.5:
+            return True, f"Top 3 snipers hold {top3:.1f}% (>10.5% bundle risk)"
             
         # 4. Top 5 holders combined (catches multi-wallet dev cluster)
         top5 = sum(holders[:5]) / 1_000_000_000 * 100 if len(holders) >= 5 else top3
-        if top5 > 12.0:
-            return True, f"Top 5 snipers hold {top5:.1f}% (>12.0% cluster risk)"
+        if top5 > 16.0:
+            return True, f"Top 5 snipers hold {top5:.1f}% (>16.0% cluster risk)"
             
-        # 5. Top ~20 wallets combined (catches cabal-distributed supply)
+        # 5. Top ~19 wallets combined (at $25k-$35k MC on Pump.fun, 35-55% of curve is sold, so top 19 naturally hold 25-42%)
         top_all = sum(holders) / 1_000_000_000 * 100
-        if top_all > 20.0:
-            return True, f"Top wallets hold {top_all:.1f}% (>20.0% cabal risk)"
+        if top_all > 50.0:
+            return True, f"Top wallets hold {top_all:.1f}% (>50.0% cabal risk)"
             
         return False, f"Clean supply (Top1={top1:.1f}%, Top5={top5:.1f}%, Total={top_all:.1f}%)"
     except Exception as e:
