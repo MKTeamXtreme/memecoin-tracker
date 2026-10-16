@@ -29,6 +29,7 @@ TRADE_AMOUNT_SOL = 0.02          # SOL per trade
 TIER1_SELL_AT    = 1.5           # Tier 1: Sell 67% when coin reaches 1.5x (returns 100% principal = 0.0201 SOL)
 TIER2_SELL_AT    = 3.0           # Tier 2: Sell 16.5% when coin reaches 3.0x (returns 0.010 SOL pure profit)
 MAX_ENTRY_MC     = 32_000        # Max discovery MC at min 0 (golden zone is $10k-$32k)
+MIN_1MIN_MC      = 20_000        # Min 1-min buy MC (must reach >=$20k golden zone by 1m; blocks tiny $12k->$15k fakeouts)
 MAX_1MIN_MC      = 55_000        # Max 1-min buy MC after the >=1.20x momentum surge
 STOP_LOSS_AT     = 0.75          # Sell everything if coin drops to 75% of entry (-25%)
 TRAILING_STOP_PCT= 0.50          # Trailing stop loss for moonbag (50% drop from peak)
@@ -447,6 +448,9 @@ async def on_new_coin(
             return
 
         actual_entry = mc_1min if mc_1min else entry_mc
+        if actual_entry < MIN_1MIN_MC:
+            log.info(f"SKIP (1m MC ${actual_entry/1000:.1f}k < ${MIN_1MIN_MC/1000:.0f}k min 1m floor) | {name}")
+            return
         if actual_entry > MAX_1MIN_MC:
             log.info(f"SKIP (1m MC ${actual_entry/1000:.1f}k > ${MAX_1MIN_MC/1000:.0f}k 1min cap) | {name}")
             return
