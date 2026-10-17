@@ -26,16 +26,18 @@ from paper import update_paper_trade
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 PAPER_MODE       = True          # Set False to trade real SOL
 TRADE_AMOUNT_SOL = 0.02          # SOL per trade
-TIER1_SELL_AT    = 1.5           # Tier 1: Sell 67% when coin reaches 1.5x (returns 100% principal = 0.0201 SOL)
-TIER2_SELL_AT    = 3.0           # Tier 2: Sell 16.5% when coin reaches 3.0x (returns 0.010 SOL pure profit)
-MAX_ENTRY_MC     = 32_000        # Max discovery MC at min 0 (golden zone is $10k-$32k)
-MIN_1MIN_MC      = 20_000        # Min 1-min buy MC (must reach >=$20k golden zone by 1m; blocks tiny $12k->$15k fakeouts)
-MAX_1MIN_MC      = 55_000        # Max 1-min buy MC after the >=1.20x momentum surge
-STOP_LOSS_AT     = 0.75          # Sell everything if coin drops to 75% of entry (-25%)
-TRAILING_STOP_PCT= 0.50          # Trailing stop loss for moonbag (50% drop from peak)
+TIER1_SELL_AT    = 1.5           # Tier 1: Sell 50% when coin reaches 1.5x (locks 0.015 SOL, keeps 50% riding)
+TIER2_SELL_AT    = 2.5           # Tier 2: Sell 25% when coin reaches 2.5x (locks 0.0125 SOL -> 0.0275 SOL total banked)
+MIN_DISCOVERY_MC = 12_000        # Min discovery MC at min 0
+MAX_ENTRY_MC     = 26_000        # Max discovery MC at min 0 (early Golden Zone <= $26k)
+MIN_1MIN_MC      = 18_000        # Min buy MC ($18k floor blocks tiny single-wallet fakeouts)
+MAX_1MIN_MC      = 29_000        # Max buy MC ($29k cap — buying >$29k had 22% win rate & caused 68% of losses)
+STOP_LOSS_AT     = 0.65          # Stop loss at 65% of entry (-35%) after 30s grace period (0.50x instant rug floor)
+TRAILING_STOP_PCT= 0.45          # Trailing stop loss for moonbag (45% drop from peak)
 MOONBAG_EXIT_HRS = 24            # Sell moonbag after this many hours
-MIN_1MIN_MULT    = 1.20          # Min 1-min mult to enter (1.20x gives ~80% win rate)
-MAX_OPEN_TRADES  = 4             # Max concurrent open trades for 0.2 SOL bankroll safety (max 0.08 SOL at risk)
+MIN_1MIN_MULT    = 1.12          # Min breakout mult to enter (+12% confirmed across 2 checks)
+MAX_1MIN_MULT    = 1.38          # Max breakout mult (+38% cap so we never buy the top of an already-pumped candle)
+MAX_OPEN_TRADES  = 4             # Max concurrent active (un-banked) trades for 0.2 SOL bankroll safety
 POLL_SECS        = 3             # How often to check open trade prices (seconds)
 
 # Solana RPC (free public endpoint — replace with paid RPC for better reliability)
@@ -244,21 +246,11 @@ async def buy_coin(
     if mint in open_trades:
         return  # already in this trade
 
-    # Capital rotation for 0.2 SOL wallet safety: cap concurrent trades
-    if len(open_trades) >= MAX_OPEN_TRADES:
-        moonbags = [t for t in open_trades.values() if t.half_sold]
-        if moonbags:
-            weakest = min(moonbags, key=lambda t: t.peak_mult)
-            log.info(f"CAPITAL ROTATION | Closing weakest moonbag {weakest.name} to free capital for {name}")
-            rem_f = 0.165 if weakest.tier2_sold else 0.33
-            await sell_coin(session, weakest, rem_f, "capital rotation", wallet_pubkey, private_key_b58)
-            weakest.closed = True
-            weakest.close_reason = "Rotated out for fresh runner"
-            if weakest.mint in open_trades:
-                closed_trades.append(open_trades.pop(weakest.mint))
-        else:
-            log.warning(f"MAX TRADES ({MAX_OPEN_TRADES}) REACHED | Skipping {name} to preserve cashflow.")
-            return
+    # Cap concurrent active (un-banked) trades for 0.2 SOL bankroll safety (do not liquidate risk-free moonbags!)
+    active_at_risk = [t for t in open_trades.values() if not t.half_sold and not t.closed]
+    if len(active_at_risk) >= MAX_OPEN_TRADES:
+        log.warning(f"MAX ACTIVE TRADES ({MAX_OPEN_TRADES}) REACHED | Skipping {name} to preserve cashflow.")
+        return
 
     is_rug, rug_msg = await check_rug_risk(mint)
     if is_rug:
@@ -337,8 +329,9 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
                 # Sync paper trading database in real time with actual current_mc
                 update_paper_trade(mint, current_mc, elapsed_secs=elapsed_secs)
 
-                # ── INITIAL STOP LOSS (-30%) ──────────────────────────────
-                if mult <= STOP_LOSS_AT and not trade.half_sold:
+                # ── INITIAL STOP LOSS (Anti-wick: 0.50x in first 30s, 0.65x after 30s) ──
+                sl_thresh = 0.50 if elapsed_secs < 30 else STOP_LOSS_AT
+                if mult <= sl_thresh and not trade.half_sold:
                     sol_back = trade.sol_invested * mult
                     trade.sol_returned += sol_back
                     trade.closed = True
@@ -347,27 +340,25 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
                     await sell_coin(session, trade, 1.0, "stop loss", wallet_pubkey, private_key_b58)
                     to_close.append(mint)
 
-                # ── TIER 1: SELL 67% AT 1.5x (100% CAPITAL BACK) ───────────
+                # ── TIER 1: SELL 50% AT 1.5x (LOCKS 0.015 SOL, KEEPS 50% RIDING) ────
                 elif not trade.half_sold and mult >= TIER1_SELL_AT:
-                    sol_back = (trade.sol_invested * 0.67) * TIER1_SELL_AT  # locks in exactly 0.0201 SOL (100% principal back)
+                    sol_back = (trade.sol_invested * 0.50) * TIER1_SELL_AT
                     trade.sol_returned += sol_back
                     trade.half_sold = True
-                    log.info(f"TIER 1 SELL (67%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (100% principal returned!)")
-                    await sell_coin(session, trade, 0.67, "Tier 1 (67% at 1.5x)", wallet_pubkey, private_key_b58)
+                    log.info(f"TIER 1 SELL (50%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL")
+                    await sell_coin(session, trade, 0.50, "Tier 1 (50% at 1.5x)", wallet_pubkey, private_key_b58)
 
-                # ── TIER 2: SELL 16.5% AT 3.0x ─────────────────────────────
+                # ── TIER 2: SELL 25% AT 2.5x (LOCKS +37.5% PROFIT GUARANTEED) ───────
                 elif trade.half_sold and not trade.tier2_sold and mult >= TIER2_SELL_AT:
-                    sol_back = (trade.sol_invested * 0.165) * TIER2_SELL_AT  # locks in another ~0.010 SOL pure profit
+                    sol_back = (trade.sol_invested * 0.25) * TIER2_SELL_AT
                     trade.sol_returned += sol_back
                     trade.tier2_sold = True
-                    log.info(f"TIER 2 SELL (16.5%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (Total Returned: {trade.sol_returned:.4f} SOL)")
-                    await sell_coin(session, trade, 0.165, "Tier 2 (16.5% at 3.0x)", wallet_pubkey, private_key_b58)
+                    log.info(f"TIER 2 SELL (25%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (Total Returned: {trade.sol_returned:.4f} SOL)")
+                    await sell_coin(session, trade, 0.25, "Tier 2 (25% at 2.5x)", wallet_pubkey, private_key_b58)
 
                 # ── TRAILING STOP LOSS (MOONBAG) ──────────────────────────
-                elif trade.half_sold and mult <= max(1.0, trade.peak_mult * (1.0 - TRAILING_STOP_PCT)):
-                    # Remaining fraction of original position:
-                    rem_fraction = 0.165 if trade.tier2_sold else 0.33
-                    # Real market return: sell at current market price (mult)
+                elif trade.half_sold and mult <= max(0.75, trade.peak_mult * (1.0 - TRAILING_STOP_PCT)):
+                    rem_fraction = 0.25 if trade.tier2_sold else 0.50
                     sol_back = (trade.sol_invested * rem_fraction) * mult
                     trade.sol_returned += sol_back
                     trade.closed = True
@@ -378,7 +369,7 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
 
                 # ── 24HR MOONBAG EXIT ─────────────────────────────────────
                 elif trade.elapsed_hrs >= MOONBAG_EXIT_HRS:
-                    rem_fraction = 0.165 if trade.tier2_sold else (0.33 if trade.half_sold else 1.0)
+                    rem_fraction = 0.25 if trade.tier2_sold else (0.50 if trade.half_sold else 1.0)
                     sol_back = (trade.sol_invested * rem_fraction) * mult
                     trade.sol_returned += sol_back
                     trade.closed = True
@@ -403,7 +394,7 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
             await asyncio.sleep(POLL_SECS)
 
 
-# ── CALLED BY MAIN BOT WHEN A NEW 100-SCORE COIN IS FOUND ────────────────────
+# ── CALLED BY MAIN BOT WHEN A NEW HIGH-SCORE COIN IS FOUND ───────────────────
 async def on_new_coin(
     session: Optional[aiohttp.ClientSession],
     mint: str,
@@ -414,9 +405,10 @@ async def on_new_coin(
     private_key_b58: str = ""
 ):
     """
-    Called automatically by main.py when a new 100-score coin is detected.
-    Checks 1-min momentum then buys if conditions are met.
-    Creates its own session if none is provided.
+    Fast two-stage breakout entry:
+      1. Wait 15s to filter instant launch rugs.
+      2. Poll every 5s (from 15s to 40s) for 2 consecutive rising checks >= 1.12x
+         inside the $18k-$29k buy window so we enter BEFORE the 60s top.
     """
     own_session = session is None
     if own_session:
@@ -424,35 +416,51 @@ async def on_new_coin(
         session = aiohttp.ClientSession(connector=connector)
 
     try:
-        if entry_mc > MAX_ENTRY_MC:
-            log.info(f"SKIP (Discovery MC ${entry_mc/1000:.1f}k > ${MAX_ENTRY_MC/1000:.0f}k golden zone cap) | {name}")
+        if entry_mc < MIN_DISCOVERY_MC or entry_mc > MAX_ENTRY_MC:
+            log.info(f"SKIP (Discovery MC ${entry_mc/1000:.1f}k outside ${MIN_DISCOVERY_MC/1000:.0f}k-${MAX_ENTRY_MC/1000:.0f}k zone) | {name}")
             return
 
         if mc_1min is None:
-            log.info(f"WAITING 1min | {name} | MC ${entry_mc/1000:.1f}k")
-            await asyncio.sleep(65)
-            mc_1min = await fetch_current_mc(session, mint)
+            log.info(f"WATCHING BREAKOUT (15s-40s) | {name} | Discovery MC ${entry_mc/1000:.1f}k")
+            await asyncio.sleep(15)
+            prev_mc = await fetch_current_mc(session, mint)
+            if prev_mc is None or prev_mc < entry_mc * 0.85:
+                log.info(f"SKIP (dumping at 15s) | {name}")
+                return
+
+            confirmed_mc = None
+            for _ in range(5):
+                await asyncio.sleep(5)
+                cur_mc = await fetch_current_mc(session, mint)
+                if cur_mc is None:
+                    continue
+                mult_now = cur_mc / entry_mc if entry_mc > 0 else 0
+                if mult_now <= STOP_LOSS_AT:
+                    log.info(f"SKIP (dumping {mult_now:.2f}x) | {name}")
+                    return
+                # Require sustained upward momentum >= 1.12x across 2 checks
+                if mult_now >= MIN_1MIN_MULT and cur_mc >= prev_mc * 0.98 and prev_mc >= entry_mc * 1.05:
+                    confirmed_mc = cur_mc
+                    break
+                prev_mc = cur_mc
+
+            mc_1min = confirmed_mc
 
         if mc_1min is None:
-            log.info(f"SKIP (no price data) | {name}")
+            log.info(f"SKIP (no sustained {MIN_1MIN_MULT}x breakout in 40s) | {name}")
             return
 
         mult_1min = mc_1min / entry_mc if entry_mc > 0 else 0
-
-        if mult_1min <= STOP_LOSS_AT:
-            log.info(f"SKIP (dumping {mult_1min:.2f}x at 1min) | {name}")
+        if mult_1min > MAX_1MIN_MULT:
+            log.info(f"SKIP (already pumped {mult_1min:.2f}x > {MAX_1MIN_MULT}x cap — avoiding top) | {name}")
             return
 
-        if mult_1min < MIN_1MIN_MULT:
-            log.info(f"SKIP (1min mult {mult_1min:.2f}x < {MIN_1MIN_MULT}x) | {name}")
-            return
-
-        actual_entry = mc_1min if mc_1min else entry_mc
+        actual_entry = mc_1min
         if actual_entry < MIN_1MIN_MC:
-            log.info(f"SKIP (1m MC ${actual_entry/1000:.1f}k < ${MIN_1MIN_MC/1000:.0f}k min 1m floor) | {name}")
+            log.info(f"SKIP (Buy MC ${actual_entry/1000:.1f}k < ${MIN_1MIN_MC/1000:.0f}k floor) | {name}")
             return
         if actual_entry > MAX_1MIN_MC:
-            log.info(f"SKIP (1m MC ${actual_entry/1000:.1f}k > ${MAX_1MIN_MC/1000:.0f}k 1min cap) | {name}")
+            log.info(f"SKIP (Buy MC ${actual_entry/1000:.1f}k > ${MAX_1MIN_MC/1000:.0f}k cap) | {name}")
             return
 
         await buy_coin(session, mint, name, actual_entry, wallet_pubkey, private_key_b58)

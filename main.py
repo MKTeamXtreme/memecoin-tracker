@@ -191,8 +191,7 @@ async def process_pairs(pairs: List[dict]) -> List[dict]:
 
         if save_coin(record):
             new_found.append(record)
-            is_golden_zone = (score >= 60 and 20_000 <= mc <= 32_000)
-            if score >= MIN_TRADE_SCORE or is_golden_zone:
+            if score >= MIN_TRADE_SCORE:
                 asyncio.create_task(on_new_coin(
                     session=None, mint=mint,
                     name=raw["name"], entry_mc=mc
