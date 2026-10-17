@@ -54,10 +54,17 @@ def init_paper_db():
         conn.commit()
     except sqlite3.OperationalError:
         pass
+
+    # Tag trades created after the V4 fast-breakout deployment (17 Oct 19:04) as V4
+    try:
+        conn.execute("UPDATE paper_trades SET strategy = 'V4' WHERE strategy = 'V3' AND created_at >= 1792260200")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
     
     conn.close()
 
-def open_paper_trade(mint: str, entry_mc: float, amount_sol: float = PAPER_INVEST, strategy: str = "V3"):
+def open_paper_trade(mint: str, entry_mc: float, amount_sol: float = PAPER_INVEST, strategy: str = "V4"):
     if entry_mc <= 0: return
     conn = get_connection()
     try:
@@ -156,7 +163,7 @@ def get_paper_stats():
         try:
             total = conn.execute("SELECT COUNT(*) FROM paper_trades").fetchone()[0]
         except sqlite3.OperationalError:
-            return {"total_trades": 0, "open_trades": 0, "closed_trades": 0, "net_profit_sol": 0.0, "v1_profit_sol": 0.0, "v2_profit_sol": 0.0, "v3_profit_sol": 0.0}
+            return {"total_trades": 0, "open_trades": 0, "closed_trades": 0, "net_profit_sol": 0.0, "v1_profit_sol": 0.0, "v2_profit_sol": 0.0, "v3_profit_sol": 0.0, "v4_profit_sol": 0.0}
 
         open_trades   = conn.execute("SELECT COUNT(*) FROM paper_trades WHERE status = 'OPEN'").fetchone()[0]
         closed_trades = conn.execute("SELECT COUNT(*) FROM paper_trades WHERE status = 'CLOSED'").fetchone()[0]
@@ -165,11 +172,13 @@ def get_paper_stats():
             v1_profit = conn.execute("SELECT SUM(profit_sol) FROM paper_trades WHERE strategy = 'V1'").fetchone()[0] or 0.0
             v2_profit = conn.execute("SELECT SUM(profit_sol) FROM paper_trades WHERE strategy = 'V2'").fetchone()[0] or 0.0
             v3_profit = conn.execute("SELECT SUM(profit_sol) FROM paper_trades WHERE strategy = 'V3'").fetchone()[0] or 0.0
+            v4_profit = conn.execute("SELECT SUM(profit_sol) FROM paper_trades WHERE strategy = 'V4'").fetchone()[0] or 0.0
             profit = conn.execute("SELECT SUM(profit_sol) FROM paper_trades").fetchone()[0] or 0.0
         except sqlite3.OperationalError:
             v1_profit = 0.0
             v2_profit = 0.0
             v3_profit = 0.0
+            v4_profit = 0.0
             profit = 0.0
 
         return {
@@ -179,7 +188,8 @@ def get_paper_stats():
             "net_profit_sol": round(profit, 4),
             "v1_profit_sol": round(v1_profit, 4),
             "v2_profit_sol": round(v2_profit, 4),
-            "v3_profit_sol": round(v3_profit, 4)
+            "v3_profit_sol": round(v3_profit, 4),
+            "v4_profit_sol": round(v4_profit, 4)
         }
     finally:
         conn.close()
