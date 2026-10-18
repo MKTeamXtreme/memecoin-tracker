@@ -26,8 +26,8 @@ from paper import update_paper_trade
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 PAPER_MODE       = True          # Set False to trade real SOL
 TRADE_AMOUNT_SOL = 0.02          # SOL per trade
-TIER1_SELL_AT    = 1.5           # Tier 1: Sell 55% when coin reaches 1.5x (locks 0.0165 SOL = 82.5% principal)
-TIER2_SELL_AT    = 2.0           # Tier 2: Sell 30% when coin reaches 2.0x (locks 0.0120 SOL -> 0.0285 SOL = +42.5% profit banked!)
+TIER1_SELL_AT    = 1.5           # Tier 1: Sell 67% when coin reaches 1.5x (locks 0.0201 SOL = 100% principal back!)
+TIER2_SELL_AT    = 2.0           # Tier 2: Sell 20% when coin reaches 2.0x (locks 0.0080 SOL -> 0.0281 SOL = +40.5% profit banked!)
 MIN_DISCOVERY_MC = 14_000        # Min discovery MC at min 0
 MAX_ENTRY_MC     = 26_000        # Max discovery MC at min 0 (early Golden Zone <= $26k)
 MIN_1MIN_MC      = 21_000        # Min buy MC ($21k floor — <$21k buys went 0/3 while >=$21k went 5/6!)
@@ -339,25 +339,25 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
                     await sell_coin(session, trade, 1.0, "stop loss", wallet_pubkey, private_key_b58)
                     to_close.append(mint)
 
-                # ── TIER 1: SELL 55% AT 1.5x (LOCKS 0.0165 SOL) ───────────
+                # ── TIER 1: SELL 67% AT 1.5x (LOCKS 0.0201 SOL = 100% PRINCIPAL BACK!) ──
                 elif not trade.half_sold and mult >= TIER1_SELL_AT:
-                    sol_back = (trade.sol_invested * 0.55) * TIER1_SELL_AT
+                    sol_back = (trade.sol_invested * 0.67) * TIER1_SELL_AT
                     trade.sol_returned += sol_back
                     trade.half_sold = True
-                    log.info(f"TIER 1 SELL (55%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL")
-                    await sell_coin(session, trade, 0.55, "Tier 1 (55% at 1.5x)", wallet_pubkey, private_key_b58)
+                    log.info(f"TIER 1 SELL (67%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (100% principal back!)")
+                    await sell_coin(session, trade, 0.67, "Tier 1 (67% at 1.5x)", wallet_pubkey, private_key_b58)
 
-                # ── TIER 2: SELL 30% AT 2.0x (LOCKS 0.0285 SOL = +42.5% PROFIT GUARANTEED) ──
+                # ── TIER 2: SELL 20% AT 2.0x (LOCKS 0.0281 SOL = +40.5% PROFIT GUARANTEED) ──
                 elif trade.half_sold and not trade.tier2_sold and mult >= TIER2_SELL_AT:
-                    sol_back = (trade.sol_invested * 0.30) * TIER2_SELL_AT
+                    sol_back = (trade.sol_invested * 0.20) * TIER2_SELL_AT
                     trade.sol_returned += sol_back
                     trade.tier2_sold = True
-                    log.info(f"TIER 2 SELL (30%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (Total Returned: {trade.sol_returned:.4f} SOL)")
-                    await sell_coin(session, trade, 0.30, "Tier 2 (30% at 2.0x)", wallet_pubkey, private_key_b58)
+                    log.info(f"TIER 2 SELL (20%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (Total Returned: {trade.sol_returned:.4f} SOL)")
+                    await sell_coin(session, trade, 0.20, "Tier 2 (20% at 2.0x)", wallet_pubkey, private_key_b58)
 
                 # ── TRAILING STOP LOSS (MOONBAG) ──────────────────────────
                 elif trade.half_sold and mult <= max(0.85, trade.peak_mult * (1.0 - TRAILING_STOP_PCT)):
-                    rem_fraction = 0.15 if trade.tier2_sold else 0.45
+                    rem_fraction = 0.13 if trade.tier2_sold else 0.33
                     sol_back = (trade.sol_invested * rem_fraction) * mult
                     trade.sol_returned += sol_back
                     trade.closed = True
@@ -368,7 +368,7 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
 
                 # ── 24HR MOONBAG EXIT ─────────────────────────────────────
                 elif trade.elapsed_hrs >= MOONBAG_EXIT_HRS:
-                    rem_fraction = 0.15 if trade.tier2_sold else (0.45 if trade.half_sold else 1.0)
+                    rem_fraction = 0.13 if trade.tier2_sold else (0.33 if trade.half_sold else 1.0)
                     sol_back = (trade.sol_invested * rem_fraction) * mult
                     trade.sol_returned += sol_back
                     trade.closed = True

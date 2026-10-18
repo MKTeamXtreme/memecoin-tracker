@@ -89,17 +89,17 @@ def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float):
         trade   = dict(trade)
         updates = {}
 
-        # Tier 1: Sell 55% at 1.5x (locks 0.0165 SOL)
+        # Tier 1: Sell 67% at 1.5x (locks 0.0201 SOL = 100% principal back!)
         if not trade["sold_half"] and current_mc >= trade["entry_mc"] * PAPER_HALF_AT:
-            sold_half_sol = (trade["invested_sol"] * 0.55) * PAPER_HALF_AT
+            sold_half_sol = (trade["invested_sol"] * 0.67) * PAPER_HALF_AT
             updates["sold_half"]     = 1
             updates["sold_half_sol"] = sold_half_sol
             trade["sold_half"]     = 1
             trade["sold_half_sol"] = sold_half_sol
 
-        # Tier 2: Sell 30% at 2.0x (locks another 0.0120 SOL -> 0.0285 SOL = +42.5% banked!)
+        # Tier 2: Sell 20% at 2.0x (locks another 0.0080 SOL -> 0.0281 SOL = +40.5% banked!)
         if trade["sold_half"] and not trade.get("sold_tier2") and current_mc >= trade["entry_mc"] * PAPER_TIER2_AT:
-            sold_tier2_sol = (trade["invested_sol"] * 0.30) * PAPER_TIER2_AT
+            sold_tier2_sol = (trade["invested_sol"] * 0.20) * PAPER_TIER2_AT
             updates["sold_tier2"]     = 1
             updates["sold_tier2_sol"] = sold_tier2_sol
             trade["sold_tier2"]     = 1
@@ -115,9 +115,9 @@ def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float):
 
         # Determine remaining position fraction
         if trade.get("sold_tier2") or updates.get("sold_tier2"):
-            rem_frac = 0.15
+            rem_frac = 0.13
         elif trade.get("sold_half") or updates.get("sold_half"):
-            rem_frac = 0.45
+            rem_frac = 0.33
         else:
             rem_frac = 1.0
 
