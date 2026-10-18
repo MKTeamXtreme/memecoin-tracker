@@ -26,14 +26,14 @@ from paper import update_paper_trade
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 PAPER_MODE       = True          # Set False to trade real SOL
 TRADE_AMOUNT_SOL = 0.02          # SOL per trade
-TIER1_SELL_AT    = 1.5           # Tier 1: Sell 50% when coin reaches 1.5x (locks 0.015 SOL, keeps 50% riding)
-TIER2_SELL_AT    = 2.5           # Tier 2: Sell 25% when coin reaches 2.5x (locks 0.0125 SOL -> 0.0275 SOL total banked)
-MIN_DISCOVERY_MC = 12_000        # Min discovery MC at min 0
+TIER1_SELL_AT    = 1.5           # Tier 1: Sell 55% when coin reaches 1.5x (locks 0.0165 SOL = 82.5% principal)
+TIER2_SELL_AT    = 2.0           # Tier 2: Sell 30% when coin reaches 2.0x (locks 0.0120 SOL -> 0.0285 SOL = +42.5% profit banked!)
+MIN_DISCOVERY_MC = 14_000        # Min discovery MC at min 0
 MAX_ENTRY_MC     = 26_000        # Max discovery MC at min 0 (early Golden Zone <= $26k)
-MIN_1MIN_MC      = 18_000        # Min buy MC ($18k floor blocks tiny single-wallet fakeouts)
+MIN_1MIN_MC      = 21_000        # Min buy MC ($21k floor — <$21k buys went 0/3 while >=$21k went 5/6!)
 MAX_1MIN_MC      = 29_000        # Max buy MC ($29k cap — buying >$29k had 22% win rate & caused 68% of losses)
-STOP_LOSS_AT     = 0.65          # Stop loss at 65% of entry (-35%) after 30s grace period (0.50x instant rug floor)
-TRAILING_STOP_PCT= 0.45          # Trailing stop loss for moonbag (45% drop from peak)
+STOP_LOSS_AT     = 0.72          # Stop loss at 72% of entry (-28%)
+TRAILING_STOP_PCT= 0.40          # Trailing stop loss for moonbag (40% drop from peak)
 MOONBAG_EXIT_HRS = 24            # Sell moonbag after this many hours
 MIN_1MIN_MULT    = 1.12          # Min breakout mult to enter (+12% confirmed across 2 checks)
 MAX_1MIN_MULT    = 1.38          # Max breakout mult (+38% cap so we never buy the top of an already-pumped candle)
@@ -329,9 +329,8 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
                 # Sync paper trading database in real time with actual current_mc
                 update_paper_trade(mint, current_mc, elapsed_secs=elapsed_secs)
 
-                # ── INITIAL STOP LOSS (Anti-wick: 0.50x in first 30s, 0.65x after 30s) ──
-                sl_thresh = 0.50 if elapsed_secs < 30 else STOP_LOSS_AT
-                if mult <= sl_thresh and not trade.half_sold:
+                # ── INITIAL STOP LOSS (-28% at 0.72x) ─────────────────────
+                if mult <= STOP_LOSS_AT and not trade.half_sold:
                     sol_back = trade.sol_invested * mult
                     trade.sol_returned += sol_back
                     trade.closed = True
@@ -340,25 +339,25 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
                     await sell_coin(session, trade, 1.0, "stop loss", wallet_pubkey, private_key_b58)
                     to_close.append(mint)
 
-                # ── TIER 1: SELL 50% AT 1.5x (LOCKS 0.015 SOL, KEEPS 50% RIDING) ────
+                # ── TIER 1: SELL 55% AT 1.5x (LOCKS 0.0165 SOL) ───────────
                 elif not trade.half_sold and mult >= TIER1_SELL_AT:
-                    sol_back = (trade.sol_invested * 0.50) * TIER1_SELL_AT
+                    sol_back = (trade.sol_invested * 0.55) * TIER1_SELL_AT
                     trade.sol_returned += sol_back
                     trade.half_sold = True
-                    log.info(f"TIER 1 SELL (50%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL")
-                    await sell_coin(session, trade, 0.50, "Tier 1 (50% at 1.5x)", wallet_pubkey, private_key_b58)
+                    log.info(f"TIER 1 SELL (55%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL")
+                    await sell_coin(session, trade, 0.55, "Tier 1 (55% at 1.5x)", wallet_pubkey, private_key_b58)
 
-                # ── TIER 2: SELL 25% AT 2.5x (LOCKS +37.5% PROFIT GUARANTEED) ───────
+                # ── TIER 2: SELL 30% AT 2.0x (LOCKS 0.0285 SOL = +42.5% PROFIT GUARANTEED) ──
                 elif trade.half_sold and not trade.tier2_sold and mult >= TIER2_SELL_AT:
-                    sol_back = (trade.sol_invested * 0.25) * TIER2_SELL_AT
+                    sol_back = (trade.sol_invested * 0.30) * TIER2_SELL_AT
                     trade.sol_returned += sol_back
                     trade.tier2_sold = True
-                    log.info(f"TIER 2 SELL (25%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (Total Returned: {trade.sol_returned:.4f} SOL)")
-                    await sell_coin(session, trade, 0.25, "Tier 2 (25% at 2.5x)", wallet_pubkey, private_key_b58)
+                    log.info(f"TIER 2 SELL (30%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (Total Returned: {trade.sol_returned:.4f} SOL)")
+                    await sell_coin(session, trade, 0.30, "Tier 2 (30% at 2.0x)", wallet_pubkey, private_key_b58)
 
                 # ── TRAILING STOP LOSS (MOONBAG) ──────────────────────────
-                elif trade.half_sold and mult <= max(0.75, trade.peak_mult * (1.0 - TRAILING_STOP_PCT)):
-                    rem_fraction = 0.25 if trade.tier2_sold else 0.50
+                elif trade.half_sold and mult <= max(0.85, trade.peak_mult * (1.0 - TRAILING_STOP_PCT)):
+                    rem_fraction = 0.15 if trade.tier2_sold else 0.45
                     sol_back = (trade.sol_invested * rem_fraction) * mult
                     trade.sol_returned += sol_back
                     trade.closed = True
@@ -369,7 +368,7 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
 
                 # ── 24HR MOONBAG EXIT ─────────────────────────────────────
                 elif trade.elapsed_hrs >= MOONBAG_EXIT_HRS:
-                    rem_fraction = 0.25 if trade.tier2_sold else (0.50 if trade.half_sold else 1.0)
+                    rem_fraction = 0.15 if trade.tier2_sold else (0.45 if trade.half_sold else 1.0)
                     sol_back = (trade.sol_invested * rem_fraction) * mult
                     trade.sol_returned += sol_back
                     trade.closed = True
