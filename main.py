@@ -160,11 +160,12 @@ async def process_pairs(pairs: List[dict]) -> List[dict]:
                 score -= 100
                 breakdown["flags"].append(f"WASH TRADING / BUNDLE DETECTED: Avg trade ${avg_trade:.0f}")
 
-        # Flag initial holder risk in the UI (actual buy-blocking rug check runs at Minute 1 in buy_coin)
+        # Block coins that already show sniper/bundle concentration at discovery (e.g. SWARMPAD)
         if score >= 70:
             is_rug, rug_msg = await check_rug_risk(mint)
             if is_rug:
-                breakdown["flags"].append(f"INITIAL SUPPLY NOTE: {rug_msg}")
+                score = max(0, score - 50)
+                breakdown["flags"].append(f"BUNDLE RISK BLOCKED (-50 pts): {rug_msg}")
 
         if score < MIN_SCORE:
             continue

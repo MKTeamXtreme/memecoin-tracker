@@ -2,12 +2,12 @@ import sqlite3
 import time
 from database import get_connection
 
-# Strategy: Option A Ladder
+# Strategy: V4 KOTH-Frontrun Ladder
 PAPER_INVEST      = 0.02
-PAPER_HALF_AT     = 1.5   # Tier 1: sell 55% when coin reaches 1.5x (returns 0.0165 SOL)
-PAPER_TIER2_AT    = 2.0   # Tier 2: sell 30% when coin reaches 2.0x (returns 0.0120 SOL -> 0.0285 SOL = +42.5% banked!)
+PAPER_HALF_AT     = 1.35  # Tier 1: sell 75% at 1.35x KOTH wall (returns 0.02025 SOL = 101.25% principal banked!)
+PAPER_TIER2_AT    = 2.0   # Tier 2: sell 15% at 2.0x (returns 0.0060 SOL -> 0.02625 SOL = +31.25% guaranteed!)
 PAPER_EXIT_HRS    = 24    # close moonbag after 24 hours
-TRAILING_STOP_PCT = 0.40  # Trailing stop loss (40% drop from peak)
+TRAILING_STOP_PCT = 0.35  # Trailing stop loss (35% drop from peak)
 
 def init_paper_db():
     conn = get_connection()
@@ -89,17 +89,17 @@ def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float):
         trade   = dict(trade)
         updates = {}
 
-        # Tier 1: Sell 67% at 1.5x (locks 0.0201 SOL = 100% principal back!)
+        # Tier 1: Sell 75% at 1.35x KOTH wall (locks 0.02025 SOL = 101.25% principal back!)
         if not trade["sold_half"] and current_mc >= trade["entry_mc"] * PAPER_HALF_AT:
-            sold_half_sol = (trade["invested_sol"] * 0.67) * PAPER_HALF_AT
+            sold_half_sol = (trade["invested_sol"] * 0.75) * PAPER_HALF_AT
             updates["sold_half"]     = 1
             updates["sold_half_sol"] = sold_half_sol
             trade["sold_half"]     = 1
             trade["sold_half_sol"] = sold_half_sol
 
-        # Tier 2: Sell 20% at 2.0x (locks another 0.0080 SOL -> 0.0281 SOL = +40.5% banked!)
+        # Tier 2: Sell 15% at 2.0x (locks another 0.0060 SOL -> 0.02625 SOL = +31.25% banked!)
         if trade["sold_half"] and not trade.get("sold_tier2") and current_mc >= trade["entry_mc"] * PAPER_TIER2_AT:
-            sold_tier2_sol = (trade["invested_sol"] * 0.20) * PAPER_TIER2_AT
+            sold_tier2_sol = (trade["invested_sol"] * 0.15) * PAPER_TIER2_AT
             updates["sold_tier2"]     = 1
             updates["sold_tier2_sol"] = sold_tier2_sol
             trade["sold_tier2"]     = 1
@@ -115,9 +115,9 @@ def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float):
 
         # Determine remaining position fraction
         if trade.get("sold_tier2") or updates.get("sold_tier2"):
-            rem_frac = 0.13
+            rem_frac = 0.10
         elif trade.get("sold_half") or updates.get("sold_half"):
-            rem_frac = 0.33
+            rem_frac = 0.25
         else:
             rem_frac = 1.0
 
@@ -126,7 +126,7 @@ def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float):
 
         # Trailing Stop Loss on moonbag/remainder
         peak_mult = peak_mc / trade["entry_mc"]
-        trailing_threshold = max(0.85, peak_mult * (1.0 - TRAILING_STOP_PCT))
+        trailing_threshold = max(0.95, peak_mult * (1.0 - TRAILING_STOP_PCT))
         is_trailing_stop = trade["sold_half"] and mult <= trailing_threshold
 
         # Close moonbag at 24hr

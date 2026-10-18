@@ -26,14 +26,14 @@ from paper import update_paper_trade
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 PAPER_MODE       = True          # Set False to trade real SOL
 TRADE_AMOUNT_SOL = 0.02          # SOL per trade
-TIER1_SELL_AT    = 1.5           # Tier 1: Sell 67% when coin reaches 1.5x (locks 0.0201 SOL = 100% principal back!)
-TIER2_SELL_AT    = 2.0           # Tier 2: Sell 20% when coin reaches 2.0x (locks 0.0080 SOL -> 0.0281 SOL = +40.5% profit banked!)
-MIN_DISCOVERY_MC = 14_000        # Min discovery MC at min 0
-MAX_ENTRY_MC     = 26_000        # Max discovery MC at min 0 (early Golden Zone <= $26k)
-MIN_1MIN_MC      = 21_000        # Min buy MC ($21k floor — <$21k buys went 0/3 while >=$21k went 5/6!)
-MAX_1MIN_MC      = 29_000        # Max buy MC ($29k cap — buying >$29k had 22% win rate & caused 68% of losses)
+TIER1_SELL_AT    = 1.35          # Tier 1: Sell 75% at 1.35x KOTH wall (locks 0.02025 SOL = 101.25% principal back at +35%!)
+TIER2_SELL_AT    = 2.0           # Tier 2: Sell 15% at 2.0x (locks 0.0060 SOL -> 0.02625 SOL = +31.25% profit guaranteed!)
+MIN_DISCOVERY_MC = 18_000        # Min discovery MC at min 0 (<$18k went 2/9 and lost -0.0715 SOL due to dev bundles)
+MAX_ENTRY_MC     = 26_000        # Max discovery MC at min 0 ($18k-$26k Golden Zone)
+MIN_1MIN_MC      = 23_000        # Min buy MC ($23k-$28.5k went 14/15 = 93.3% hitting 1.35x+ across V3+V4, 6/6 = 100% in V4!)
+MAX_1MIN_MC      = 28_500        # Max buy MC ($28.5k cap so 1.35x Tier 1 sits right at the $31k-$38k KOTH momentum wave)
 STOP_LOSS_AT     = 0.72          # Stop loss at 72% of entry (-28%)
-TRAILING_STOP_PCT= 0.40          # Trailing stop loss for moonbag (40% drop from peak)
+TRAILING_STOP_PCT= 0.35          # Trailing stop loss for moonbag (35% drop from peak)
 MOONBAG_EXIT_HRS = 24            # Sell moonbag after this many hours
 MIN_1MIN_MULT    = 1.12          # Min breakout mult to enter (+12% confirmed across 2 checks)
 MAX_1MIN_MULT    = 1.38          # Max breakout mult (+38% cap so we never buy the top of an already-pumped candle)
@@ -105,6 +105,30 @@ async def fetch_current_mc(session: aiohttp.ClientSession, mint: str) -> Optiona
             return float(mc) if mc else None
     except Exception:
         return None
+
+
+async def check_buy_pressure(session: aiohttp.ClientSession, mint: str) -> tuple[bool, str]:
+    """Verify m5 buys outnumber sells on DexScreener so we don't buy into an active bundle dump."""
+    try:
+        async with session.get(
+            DEXSCREENER_URL.format(mint),
+            timeout=aiohttp.ClientTimeout(total=8)
+        ) as resp:
+            if resp.status != 200:
+                return True, "OK"
+            data = await resp.json(content_type=None)
+            pairs = data.get("pairs") or []
+            if not pairs:
+                return True, "OK"
+            best = max(pairs, key=lambda p: (p.get("liquidity") or {}).get("usd") or 0)
+            m5 = (best.get("txns") or {}).get("m5") or {}
+            buys = int(m5.get("buys") or 0)
+            sells = int(m5.get("sells") or 0)
+            if buys > 0 and sells >= buys:
+                return False, f"Sell pressure dominates (m5 buys={buys} <= sells={sells})"
+            return True, f"Orderflow OK (m5 buys={buys}, sells={sells})"
+    except Exception:
+        return True, "OK"
 
 
 # ── JUPITER SWAP EXECUTION ────────────────────────────────────────────────────
@@ -257,6 +281,11 @@ async def buy_coin(
         log.warning(f"RUG PREVENTED | {name} | {rug_msg} - Aborting buy.")
         return
 
+    bp_ok, bp_msg = await check_buy_pressure(session, mint)
+    if not bp_ok:
+        log.warning(f"SELL PRESSURE BLOCKED | {name} | {bp_msg} - Aborting buy.")
+        return
+
 
     invest_amt = TRADE_AMOUNT_SOL * 2 if is_news_match else TRADE_AMOUNT_SOL
     news_tag = " [NEWS/HYPE]" if is_news_match else ""
@@ -339,25 +368,25 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
                     await sell_coin(session, trade, 1.0, "stop loss", wallet_pubkey, private_key_b58)
                     to_close.append(mint)
 
-                # ── TIER 1: SELL 67% AT 1.5x (LOCKS 0.0201 SOL = 100% PRINCIPAL BACK!) ──
+                # ── TIER 1: SELL 75% AT 1.35x KOTH WALL (LOCKS 0.02025 SOL = 101.25% PRINCIPAL BACK!) ──
                 elif not trade.half_sold and mult >= TIER1_SELL_AT:
-                    sol_back = (trade.sol_invested * 0.67) * TIER1_SELL_AT
+                    sol_back = (trade.sol_invested * 0.75) * TIER1_SELL_AT
                     trade.sol_returned += sol_back
                     trade.half_sold = True
-                    log.info(f"TIER 1 SELL (67%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (100% principal back!)")
-                    await sell_coin(session, trade, 0.67, "Tier 1 (67% at 1.5x)", wallet_pubkey, private_key_b58)
+                    log.info(f"TIER 1 SELL (75%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (101.25% principal back!)")
+                    await sell_coin(session, trade, 0.75, "Tier 1 (75% at 1.35x KOTH)", wallet_pubkey, private_key_b58)
 
-                # ── TIER 2: SELL 20% AT 2.0x (LOCKS 0.0281 SOL = +40.5% PROFIT GUARANTEED) ──
+                # ── TIER 2: SELL 15% AT 2.0x (LOCKS 0.02625 SOL = +31.25% PROFIT GUARANTEED) ──
                 elif trade.half_sold and not trade.tier2_sold and mult >= TIER2_SELL_AT:
-                    sol_back = (trade.sol_invested * 0.20) * TIER2_SELL_AT
+                    sol_back = (trade.sol_invested * 0.15) * TIER2_SELL_AT
                     trade.sol_returned += sol_back
                     trade.tier2_sold = True
-                    log.info(f"TIER 2 SELL (20%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (Total Returned: {trade.sol_returned:.4f} SOL)")
-                    await sell_coin(session, trade, 0.20, "Tier 2 (20% at 2.0x)", wallet_pubkey, private_key_b58)
+                    log.info(f"TIER 2 SELL (15%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (Total Returned: {trade.sol_returned:.4f} SOL)")
+                    await sell_coin(session, trade, 0.15, "Tier 2 (15% at 2.0x)", wallet_pubkey, private_key_b58)
 
                 # ── TRAILING STOP LOSS (MOONBAG) ──────────────────────────
-                elif trade.half_sold and mult <= max(0.85, trade.peak_mult * (1.0 - TRAILING_STOP_PCT)):
-                    rem_fraction = 0.13 if trade.tier2_sold else 0.33
+                elif trade.half_sold and mult <= max(0.95, trade.peak_mult * (1.0 - TRAILING_STOP_PCT)):
+                    rem_fraction = 0.10 if trade.tier2_sold else 0.25
                     sol_back = (trade.sol_invested * rem_fraction) * mult
                     trade.sol_returned += sol_back
                     trade.closed = True
@@ -368,7 +397,7 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
 
                 # ── 24HR MOONBAG EXIT ─────────────────────────────────────
                 elif trade.elapsed_hrs >= MOONBAG_EXIT_HRS:
-                    rem_fraction = 0.13 if trade.tier2_sold else (0.33 if trade.half_sold else 1.0)
+                    rem_fraction = 0.10 if trade.tier2_sold else (0.25 if trade.half_sold else 1.0)
                     sol_back = (trade.sol_invested * rem_fraction) * mult
                     trade.sol_returned += sol_back
                     trade.closed = True
@@ -406,8 +435,8 @@ async def on_new_coin(
     """
     Fast two-stage breakout entry:
       1. Wait 15s to filter instant launch rugs.
-      2. Poll every 5s (from 15s to 40s) for 2 consecutive rising checks >= 1.12x
-         inside the $18k-$29k buy window so we enter BEFORE the 60s top.
+      2. Poll every 5s (from 15s to 45s) for 2 consecutive rising checks >= 1.12x
+         inside the $23k-$28.5k buy window so we enter only confirmed organic breakouts.
     """
     own_session = session is None
     if own_session:
@@ -420,7 +449,7 @@ async def on_new_coin(
             return
 
         if mc_1min is None:
-            log.info(f"WATCHING BREAKOUT (15s-40s) | {name} | Discovery MC ${entry_mc/1000:.1f}k")
+            log.info(f"WATCHING BREAKOUT (15s-45s) | {name} | Discovery MC ${entry_mc/1000:.1f}k")
             await asyncio.sleep(15)
             prev_mc = await fetch_current_mc(session, mint)
             if prev_mc is None or prev_mc < entry_mc * 0.85:
@@ -428,7 +457,7 @@ async def on_new_coin(
                 return
 
             confirmed_mc = None
-            for _ in range(5):
+            for _ in range(6):
                 await asyncio.sleep(5)
                 cur_mc = await fetch_current_mc(session, mint)
                 if cur_mc is None:
@@ -437,8 +466,8 @@ async def on_new_coin(
                 if mult_now <= STOP_LOSS_AT:
                     log.info(f"SKIP (dumping {mult_now:.2f}x) | {name}")
                     return
-                # Require sustained upward momentum >= 1.12x across 2 checks
-                if mult_now >= MIN_1MIN_MULT and cur_mc >= prev_mc * 0.98 and prev_mc >= entry_mc * 1.05:
+                # Require sustained upward momentum >= 1.12x AND inside the $23k+ buy window before breaking!
+                if mult_now >= MIN_1MIN_MULT and cur_mc >= MIN_1MIN_MC and cur_mc >= prev_mc * 0.98 and prev_mc >= entry_mc * 1.05:
                     confirmed_mc = cur_mc
                     break
                 prev_mc = cur_mc
@@ -446,7 +475,7 @@ async def on_new_coin(
             mc_1min = confirmed_mc
 
         if mc_1min is None:
-            log.info(f"SKIP (no sustained {MIN_1MIN_MULT}x breakout in 40s) | {name}")
+            log.info(f"SKIP (no sustained {MIN_1MIN_MULT}x breakout into >=${MIN_1MIN_MC/1000:.0f}k in 45s) | {name}")
             return
 
         mult_1min = mc_1min / entry_mc if entry_mc > 0 else 0
@@ -459,7 +488,7 @@ async def on_new_coin(
             log.info(f"SKIP (Buy MC ${actual_entry/1000:.1f}k < ${MIN_1MIN_MC/1000:.0f}k floor) | {name}")
             return
         if actual_entry > MAX_1MIN_MC:
-            log.info(f"SKIP (Buy MC ${actual_entry/1000:.1f}k > ${MAX_1MIN_MC/1000:.0f}k cap) | {name}")
+            log.info(f"SKIP (Buy MC ${actual_entry/1000:.1f}k > ${MAX_1MIN_MC/1000:.1f}k cap) | {name}")
             return
 
         await buy_coin(session, mint, name, actual_entry, wallet_pubkey, private_key_b58)
