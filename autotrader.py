@@ -26,17 +26,19 @@ from paper import update_paper_trade
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 PAPER_MODE       = True          # Set False to trade real SOL
 TRADE_AMOUNT_SOL = 0.02          # SOL per trade
-TIER1_SELL_AT    = 1.35          # Tier 1: Sell 75% at 1.35x KOTH wall (locks 0.02025 SOL = 101.25% principal back at +35%!)
-TIER2_SELL_AT    = 2.0           # Tier 2: Sell 15% at 2.0x (locks 0.0060 SOL -> 0.02625 SOL = +31.25% profit guaranteed!)
-MIN_DISCOVERY_MC = 18_000        # Min discovery MC at min 0 (<$18k went 2/9 and lost -0.0715 SOL due to dev bundles)
-MAX_ENTRY_MC     = 26_000        # Max discovery MC at min 0 ($18k-$26k Golden Zone)
-MIN_1MIN_MC      = 23_000        # Min buy MC ($23k-$28.5k went 14/15 = 93.3% hitting 1.35x+ across V3+V4, 6/6 = 100% in V4!)
-MAX_1MIN_MC      = 28_500        # Max buy MC ($28.5k cap so 1.35x Tier 1 sits right at the $31k-$38k KOTH momentum wave)
-STOP_LOSS_AT     = 0.72          # Stop loss at 72% of entry (-28%)
+TIER1_SELL_AT    = 1.35          # Tier 1: Sell 74% at 1.35x (locks 0.0200 SOL = 100.0% principal back at +35%!)
+TIER2_SELL_AT    = 2.0           # Tier 2: Sell 10% at 2.0x (locks 0.0040 SOL -> 0.0240 SOL = +20% guaranteed + 16% Moonbag!)
+MIN_DISCOVERY_MC = 18_500        # Min discovery MC at min 0 ($18.5k-$26k Golden Zone)
+MAX_ENTRY_MC     = 26_000        # Max discovery MC at min 0
+MIN_1MIN_MC      = 24_500        # Min 45s-50s staircase buy MC ($24.5k floor)
+MAX_1MIN_MC      = 39_500        # Max 45s-50s staircase buy MC ($39.5k cap; skips $30.8k-$33.8k KOTH dump wall)
+KOTH_TRAP_LOW    = 30_800        # Lower bound of Pump.fun King-of-the-Hill dump wall ($30.8k-$33.8k)
+KOTH_TRAP_HIGH   = 33_800        # Upper bound of KOTH dump wall (coins must either be pre-KOTH <=$30.8k or broken above >=$33.8k)
+STOP_LOSS_AT     = 0.78          # Tighter initial stop loss at 78% of entry (-22%)
 TRAILING_STOP_PCT= 0.35          # Trailing stop loss for moonbag (35% drop from peak)
 MOONBAG_EXIT_HRS = 24            # Sell moonbag after this many hours
-MIN_1MIN_MULT    = 1.12          # Min breakout mult to enter (+12% confirmed across 2 checks)
-MAX_1MIN_MULT    = 1.38          # Max breakout mult (+38% cap so we never buy the top of an already-pumped candle)
+MIN_1MIN_MULT    = 1.15          # Min 45s staircase mult from discovery (+15%)
+MAX_1MIN_MULT    = 1.95          # Max 45s staircase mult from discovery (+95% cap for KOTH breakouts)
 MAX_OPEN_TRADES  = 4             # Max concurrent active (un-banked) trades for 0.2 SOL bankroll safety
 POLL_SECS        = 3             # How often to check open trade prices (seconds)
 
@@ -248,11 +250,21 @@ async def check_rug_risk(mint: str) -> tuple[bool, str]:
         if top5 > 16.0:
             return True, f"Top 5 snipers hold {top5:.1f}% (>16.0% cluster risk)"
             
-        # 5. Top ~19 wallets combined (at $25k-$35k MC on Pump.fun, 35-55% of curve is sold, so top 19 naturally hold 25-42%)
+        # 5. Top ~19 wallets combined vs 1B total supply
         top_all = sum(holders) / 1_000_000_000 * 100
         if top_all > 50.0:
             return True, f"Top wallets hold {top_all:.1f}% (>50.0% cabal risk)"
-            
+
+        # 6. Circulating-supply Jito bundle check (catches 12-19 wallet split bundles when 600M-800M is still in curve)
+        circulating = max(1.0, 1_000_000_000 - amounts[0])
+        if circulating >= 25_000_000:
+            top5_circ = sum(holders[:5]) / circulating * 100
+            top19_circ = sum(holders) / circulating * 100
+            if top5_circ > 38.0:
+                return True, f"Top 5 hold {top5_circ:.1f}% of circulating float (>38% Jito bundle risk)"
+            if top19_circ > 75.0:
+                return True, f"Top 19 hold {top19_circ:.1f}% of circulating float (>75% Jito bundle risk)"
+
         return False, f"Clean supply (Top1={top1:.1f}%, Top5={top5:.1f}%, Total={top_all:.1f}%)"
     except Exception as e:
         log.error(f"Rug check failed: {e}")
@@ -358,35 +370,37 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
                 # Sync paper trading database in real time with actual current_mc
                 update_paper_trade(mint, current_mc, elapsed_secs=elapsed_secs)
 
-                # ── INITIAL STOP LOSS (-28% at 0.72x) ─────────────────────
-                if mult <= STOP_LOSS_AT and not trade.half_sold:
+                # ── INITIAL STOP LOSS (-22% at 0.78x) OR 40s FAILED-BREAKOUT TIME-STOP ──
+                is_failed_breakout = (not trade.half_sold and elapsed_secs >= 40 and mult <= 0.95 and trade.peak_mult < 1.18)
+                if (mult <= STOP_LOSS_AT or is_failed_breakout) and not trade.half_sold:
                     sol_back = trade.sol_invested * mult
                     trade.sol_returned += sol_back
                     trade.closed = True
-                    trade.close_reason = f"Stop loss at {mult:.2f}x"
-                    log.info(f"STOP LOSS | {trade.name} | {mult:.2f}x | PnL: {trade.pnl:+.4f} SOL")
-                    await sell_coin(session, trade, 1.0, "stop loss", wallet_pubkey, private_key_b58)
+                    reason_str = "failed breakout time-stop" if is_failed_breakout else "stop loss"
+                    trade.close_reason = f"{reason_str} at {mult:.2f}x"
+                    log.info(f"STOP ({reason_str.upper()}) | {trade.name} | {mult:.2f}x | PnL: {trade.pnl:+.4f} SOL")
+                    await sell_coin(session, trade, 1.0, reason_str, wallet_pubkey, private_key_b58)
                     to_close.append(mint)
 
-                # ── TIER 1: SELL 75% AT 1.35x KOTH WALL (LOCKS 0.02025 SOL = 101.25% PRINCIPAL BACK!) ──
+                # ── TIER 1: SELL 74% AT 1.35x KOTH WALL (LOCKS 0.0200 SOL = 100.0% PRINCIPAL BACK!) ──
                 elif not trade.half_sold and mult >= TIER1_SELL_AT:
-                    sol_back = (trade.sol_invested * 0.75) * TIER1_SELL_AT
+                    sol_back = (trade.sol_invested * 0.74) * TIER1_SELL_AT
                     trade.sol_returned += sol_back
                     trade.half_sold = True
-                    log.info(f"TIER 1 SELL (75%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (101.25% principal back!)")
-                    await sell_coin(session, trade, 0.75, "Tier 1 (75% at 1.35x KOTH)", wallet_pubkey, private_key_b58)
+                    log.info(f"TIER 1 SELL (74%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (100% principal back!)")
+                    await sell_coin(session, trade, 0.74, "Tier 1 (74% at 1.35x KOTH)", wallet_pubkey, private_key_b58)
 
-                # ── TIER 2: SELL 15% AT 2.0x (LOCKS 0.02625 SOL = +31.25% PROFIT GUARANTEED) ──
+                # ── TIER 2: SELL 10% AT 2.0x (LOCKS 0.0240 SOL = +20% GUARANTEED + 16% MOONBAG!) ──
                 elif trade.half_sold and not trade.tier2_sold and mult >= TIER2_SELL_AT:
-                    sol_back = (trade.sol_invested * 0.15) * TIER2_SELL_AT
+                    sol_back = (trade.sol_invested * 0.10) * TIER2_SELL_AT
                     trade.sol_returned += sol_back
                     trade.tier2_sold = True
-                    log.info(f"TIER 2 SELL (15%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (Total Returned: {trade.sol_returned:.4f} SOL)")
-                    await sell_coin(session, trade, 0.15, "Tier 2 (15% at 2.0x)", wallet_pubkey, private_key_b58)
+                    log.info(f"TIER 2 SELL (10%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (Total Returned: {trade.sol_returned:.4f} SOL)")
+                    await sell_coin(session, trade, 0.10, "Tier 2 (10% at 2.0x)", wallet_pubkey, private_key_b58)
 
-                # ── TRAILING STOP LOSS (MOONBAG) ──────────────────────────
+                # ── TRAILING STOP LOSS (16% MOONBAG) ──────────────────────
                 elif trade.half_sold and mult <= max(0.95, trade.peak_mult * (1.0 - TRAILING_STOP_PCT)):
-                    rem_fraction = 0.10 if trade.tier2_sold else 0.25
+                    rem_fraction = 0.16 if trade.tier2_sold else 0.26
                     sol_back = (trade.sol_invested * rem_fraction) * mult
                     trade.sol_returned += sol_back
                     trade.closed = True
@@ -397,7 +411,7 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
 
                 # ── 24HR MOONBAG EXIT ─────────────────────────────────────
                 elif trade.elapsed_hrs >= MOONBAG_EXIT_HRS:
-                    rem_fraction = 0.10 if trade.tier2_sold else (0.25 if trade.half_sold else 1.0)
+                    rem_fraction = 0.16 if trade.tier2_sold else (0.26 if trade.half_sold else 1.0)
                     sol_back = (trade.sol_invested * rem_fraction) * mult
                     trade.sol_returned += sol_back
                     trade.closed = True
@@ -449,33 +463,37 @@ async def on_new_coin(
             return
 
         if mc_1min is None:
-            log.info(f"WATCHING BREAKOUT (15s-45s) | {name} | Discovery MC ${entry_mc/1000:.1f}k")
-            await asyncio.sleep(15)
-            prev_mc = await fetch_current_mc(session, mint)
-            if prev_mc is None or prev_mc < entry_mc * 0.85:
-                log.info(f"SKIP (dumping at 15s) | {name}")
+            log.info(f"WATCHING 3-STAGE STAIRCASE (0s->20s->45s) | {name} | Discovery MC ${entry_mc/1000:.1f}k")
+            # Stage 1: Wait 20s and require +10% gain from discovery (filters instant launch dumps)
+            await asyncio.sleep(20)
+            mc_20s = await fetch_current_mc(session, mint)
+            if mc_20s is None or mc_20s < entry_mc * 1.10:
+                log.info(f"SKIP (20s MC ${mc_20s/1000 if mc_20s else 0:.1f}k < 1.10x discovery) | {name}")
                 return
 
-            confirmed_mc = None
-            for _ in range(6):
-                await asyncio.sleep(5)
-                cur_mc = await fetch_current_mc(session, mint)
-                if cur_mc is None:
-                    continue
-                mult_now = cur_mc / entry_mc if entry_mc > 0 else 0
-                if mult_now <= STOP_LOSS_AT:
-                    log.info(f"SKIP (dumping {mult_now:.2f}x) | {name}")
-                    return
-                # Require sustained upward momentum >= 1.12x AND inside the $23k+ buy window before breaking!
-                if mult_now >= MIN_1MIN_MULT and cur_mc >= MIN_1MIN_MC and cur_mc >= prev_mc * 0.98 and prev_mc >= entry_mc * 1.05:
-                    confirmed_mc = cur_mc
-                    break
-                prev_mc = cur_mc
+            # Stage 2: Wait another 25s (to 45s) so DexScreener cache refreshes & 20s dev-bundle spikes roll over!
+            # Across 48 V4 trades, coins where 45s-60s MC <= 20s MC went 5/30 (-0.25 SOL), while >20s MC went 10/12 (+0.11 SOL)!
+            await asyncio.sleep(25)
+            mc_45s = await fetch_current_mc(session, mint)
+            if mc_45s is None or mc_45s <= mc_20s * 1.02:
+                log.info(f"SKIP (stalled/rolled over between 20s ${mc_20s/1000:.1f}k and 45s ${mc_45s/1000 if mc_45s else 0:.1f}k) | {name}")
+                return
 
-            mc_1min = confirmed_mc
+            # Stage 3: KOTH Dump-Wall Filter ($30.8k - $33.8k)
+            # If sitting inside the exact $30.8k-$33.8k King-of-the-Hill dump zone at 45s, wait 10s to require a clean breakout > $33.8k
+            if KOTH_TRAP_LOW < mc_45s < KOTH_TRAP_HIGH:
+                log.info(f"KOTH WALL CHECK ($30.8k-$33.8k) | {name} at ${mc_45s/1000:.1f}k — waiting 10s for breakout > ${KOTH_TRAP_HIGH/1000:.1f}k")
+                await asyncio.sleep(10)
+                mc_55s = await fetch_current_mc(session, mint)
+                if mc_55s is None or mc_55s < KOTH_TRAP_HIGH or mc_55s <= mc_45s:
+                    log.info(f"SKIP (rejected at KOTH wall: ${mc_55s/1000 if mc_55s else 0:.1f}k) | {name}")
+                    return
+                mc_45s = mc_55s
+
+            mc_1min = mc_45s
 
         if mc_1min is None:
-            log.info(f"SKIP (no sustained {MIN_1MIN_MULT}x breakout into >=${MIN_1MIN_MC/1000:.0f}k in 45s) | {name}")
+            log.info(f"SKIP (did not pass 3-stage staircase) | {name}")
             return
 
         mult_1min = mc_1min / entry_mc if entry_mc > 0 else 0

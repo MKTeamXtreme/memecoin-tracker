@@ -89,17 +89,17 @@ def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float):
         trade   = dict(trade)
         updates = {}
 
-        # Tier 1: Sell 75% at 1.35x KOTH wall (locks 0.02025 SOL = 101.25% principal back!)
+        # Tier 1: Sell 74% at 1.35x KOTH wall (locks 0.0200 SOL = 100.0% principal back!)
         if not trade["sold_half"] and current_mc >= trade["entry_mc"] * PAPER_HALF_AT:
-            sold_half_sol = (trade["invested_sol"] * 0.75) * PAPER_HALF_AT
+            sold_half_sol = (trade["invested_sol"] * 0.74) * PAPER_HALF_AT
             updates["sold_half"]     = 1
             updates["sold_half_sol"] = sold_half_sol
             trade["sold_half"]     = 1
             trade["sold_half_sol"] = sold_half_sol
 
-        # Tier 2: Sell 15% at 2.0x (locks another 0.0060 SOL -> 0.02625 SOL = +31.25% banked!)
+        # Tier 2: Sell 10% at 2.0x (locks another 0.0040 SOL -> 0.0240 SOL = +20% banked + 16% Moonbag!)
         if trade["sold_half"] and not trade.get("sold_tier2") and current_mc >= trade["entry_mc"] * PAPER_TIER2_AT:
-            sold_tier2_sol = (trade["invested_sol"] * 0.15) * PAPER_TIER2_AT
+            sold_tier2_sol = (trade["invested_sol"] * 0.10) * PAPER_TIER2_AT
             updates["sold_tier2"]     = 1
             updates["sold_tier2_sol"] = sold_tier2_sol
             trade["sold_tier2"]     = 1
@@ -112,20 +112,22 @@ def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float):
             trade["peak_mc"] = peak_mc
 
         mult = current_mc / trade["entry_mc"]
+        peak_mult = peak_mc / trade["entry_mc"]
+        trade_elapsed = time.time() - (trade.get("created_at") or time.time())
 
         # Determine remaining position fraction
         if trade.get("sold_tier2") or updates.get("sold_tier2"):
-            rem_frac = 0.10
+            rem_frac = 0.16
         elif trade.get("sold_half") or updates.get("sold_half"):
-            rem_frac = 0.25
+            rem_frac = 0.26
         else:
             rem_frac = 1.0
 
-        # Stop Loss (-28% at 0.72x)
-        is_stop_loss = not trade["sold_half"] and mult <= 0.72
+        # Stop Loss (-22% at 0.78x) or 40s Failed-Breakout Time-Stop (<=0.95x after 40s if peak < 1.18x)
+        is_failed_breakout = (not trade["sold_half"] and trade_elapsed >= 40 and mult <= 0.95 and peak_mult < 1.18)
+        is_stop_loss = not trade["sold_half"] and (mult <= 0.78 or is_failed_breakout)
 
         # Trailing Stop Loss on moonbag/remainder
-        peak_mult = peak_mc / trade["entry_mc"]
         trailing_threshold = max(0.95, peak_mult * (1.0 - TRAILING_STOP_PCT))
         is_trailing_stop = trade["sold_half"] and mult <= trailing_threshold
 
