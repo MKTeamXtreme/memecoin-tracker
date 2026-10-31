@@ -27,7 +27,8 @@ from paper import update_paper_trade
 PAPER_MODE       = True          # Set False to trade real SOL
 TRADE_AMOUNT_SOL = 0.02          # SOL per trade
 TIER1_SELL_AT    = 1.35          # Tier 1: Sell 74% at 1.35x (locks 0.0200 SOL = 100.0% principal back at +35%!)
-TIER2_SELL_AT    = 2.0           # Tier 2: Sell 10% at 2.0x (locks 0.0040 SOL -> 0.0240 SOL = +20% guaranteed + 16% Moonbag!)
+TIER2_SELL_AT    = 2.0           # Tier 2: Sell 18% at 2.0x (locks +0.0072 SOL -> 0.0272 SOL = +36% guaranteed + 8% Moonbag!)
+MIN_COIN_AGE_SECS= 110           # Min token age at discovery (110s filters slot-0/early launch dumps: 51% vs 36% WR across 554 coins)
 MIN_DISCOVERY_MC = 18_500        # Min discovery MC at min 0 ($18.5k-$26k Golden Zone)
 MAX_ENTRY_MC     = 26_000        # Max discovery MC at min 0
 MIN_1MIN_MC      = 24_500        # Min 45s-50s staircase buy MC ($24.5k floor)
@@ -200,10 +201,11 @@ async def execute_swap(
 
 # ── BUY ───────────────────────────────────────────────────────────────────────
 
-async def check_rug_risk(mint: str) -> tuple[bool, str]:
+async def check_rug_risk(mint: str, expected_mc: float = 0.0) -> tuple[bool, str]:
     """
     Check if top holders (excluding bonding curve/Raydium pool) hold dangerous supply.
-    Detects split-wallet dev sniper bundles and cabal clusters.
+    Detects split-wallet dev sniper bundles, 500-wallet micro-shard Sybil bundlers,
+    and stale DexScreener caches on already-rugged Pump.fun bonding curves.
     """
     try:
         from solders.pubkey import Pubkey
@@ -216,7 +218,7 @@ async def check_rug_risk(mint: str) -> tuple[bool, str]:
             return False, "Could not fetch holders"
             
         # Pump.fun coins have 1 Billion total supply (1,000,000,000).
-        # Top account (amounts[0]) is the bonding curve / pool (~800M+).
+        # Top account (amounts[0]) is the bonding curve / pool (~800M+ when rugged, ~210M-650M at $18.5k-$60k).
         amounts = []
         for acc in res.value:
             ui_amt = acc.amount.ui_amount
@@ -226,6 +228,15 @@ async def check_rug_risk(mint: str) -> tuple[bool, str]:
         amounts.sort(reverse=True)
         if len(amounts) < 2:
             return False, "Not enough holders to check"
+
+        is_pump = mint.endswith("pump")
+        if is_pump and amounts[0] > 1_000_000_000:
+            return True, f"Counterfeit pump supply ({amounts[0]/1e6:.0f}M > 1B)"
+
+        # Stale DexScreener cache blocker: a live Pump.fun coin >= $18.5k MC mathematically has <650M in curve.
+        # If >780M tokens are back in amounts[0], the coin has ALREADY rugged on-chain while DexScreener lags!
+        if is_pump and expected_mc >= 18_500 and amounts[0] > 780_000_000:
+            return True, f"Already rugged on-chain / stale DexScreener cache (curve holds {amounts[0]/1e6:.1f}M)"
             
         # Non-curve holders (excluding the liquidity pool / curve at index 0)
         holders = amounts[1:]
@@ -255,7 +266,7 @@ async def check_rug_risk(mint: str) -> tuple[bool, str]:
         if top_all > 50.0:
             return True, f"Top wallets hold {top_all:.1f}% (>50.0% cabal risk)"
 
-        # 6. Circulating-supply Jito bundle check (catches 12-19 wallet split bundles when 600M-800M is still in curve)
+        # 6. Circulating-supply Jito & Micro-Shard Sybil bundle checks
         circulating = max(1.0, 1_000_000_000 - amounts[0])
         if circulating >= 25_000_000:
             top5_circ = sum(holders[:5]) / circulating * 100
@@ -264,6 +275,10 @@ async def check_rug_risk(mint: str) -> tuple[bool, str]:
                 return True, f"Top 5 hold {top5_circ:.1f}% of circulating float (>38% Jito bundle risk)"
             if top19_circ > 75.0:
                 return True, f"Top 19 hold {top19_circ:.1f}% of circulating float (>75% Jito bundle risk)"
+            # 7. 500-Wallet Micro-Shard Sybil Bundler check (while on Pump.fun bonding curve: 200M <= curve <= 780M):
+            # Real organic bonding-curve coins have top19_circ in 33%-75%; 500-wallet v1 bundlers shard float to 1%-5%!
+            if is_pump and 200_000_000 <= amounts[0] <= 780_000_000 and circulating >= 200_000_000 and top19_circ < 15.0:
+                return True, f"Micro-shard Sybil bundler: Top 19 hold only {top19_circ:.1f}% of {circulating/1e6:.0f}M float (<15%)"
 
         return False, f"Clean supply (Top1={top1:.1f}%, Top5={top5:.1f}%, Total={top_all:.1f}%)"
     except Exception as e:
@@ -288,7 +303,7 @@ async def buy_coin(
         log.warning(f"MAX ACTIVE TRADES ({MAX_OPEN_TRADES}) REACHED | Skipping {name} to preserve cashflow.")
         return
 
-    is_rug, rug_msg = await check_rug_risk(mint)
+    is_rug, rug_msg = await check_rug_risk(mint, expected_mc=entry_mc)
     if is_rug:
         log.warning(f"RUG PREVENTED | {name} | {rug_msg} - Aborting buy.")
         return
@@ -346,9 +361,46 @@ async def sell_coin(
         )
 
 
+def restore_open_v4_trades():
+    """Reload any OPEN V4 trades from SQLite on startup so server restarts never orphan live trades."""
+    try:
+        from database import get_connection
+        conn = get_connection()
+        rows = conn.execute("""
+            SELECT pt.mint, COALESCE(c.name, pt.mint) as name, pt.entry_mc, pt.invested_sol,
+                   pt.sold_half, pt.sold_half_sol, COALESCE(pt.sold_tier2, 0) as sold_tier2,
+                   COALESCE(pt.sold_tier2_sol, 0) as sold_tier2_sol, pt.peak_mc, pt.created_at
+            FROM paper_trades pt
+            LEFT JOIN coins c ON c.mint = pt.mint
+            WHERE pt.status = 'OPEN' AND pt.strategy = 'V4'
+        """).fetchall()
+        conn.close()
+        for r in rows:
+            mint = r[0]
+            if mint not in open_trades:
+                entry_mc = float(r[2] or 1.0)
+                peak_mc = float(r[8] or entry_mc)
+                open_trades[mint] = Trade(
+                    mint=mint,
+                    name=str(r[1]),
+                    entry_mc=entry_mc,
+                    entry_time=float(r[9] or time.time()),
+                    sol_invested=float(r[3] or TRADE_AMOUNT_SOL),
+                    half_sold=bool(r[4]),
+                    tier2_sold=bool(r[6]),
+                    peak_mult=peak_mc / entry_mc if entry_mc > 0 else 1.0,
+                    sol_returned=float(r[5] or 0.0) + float(r[7] or 0.0),
+                )
+        if rows:
+            log.info(f"Restored {len(rows)} OPEN V4 trade(s) from database into 3s monitor loop.")
+    except Exception as e:
+        log.error(f"Could not restore open V4 trades: {e}")
+
+
 # ── TRADE MONITOR LOOP ────────────────────────────────────────────────────────
 async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
     """Fast loop that checks all open trade prices every POLL_SECS seconds."""
+    restore_open_v4_trades()
     connector = aiohttp.TCPConnector(ssl=False)
     async with aiohttp.ClientSession(connector=connector) as session:
         while True:
@@ -390,17 +442,17 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
                     log.info(f"TIER 1 SELL (74%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (100% principal back!)")
                     await sell_coin(session, trade, 0.74, "Tier 1 (74% at 1.35x KOTH)", wallet_pubkey, private_key_b58)
 
-                # ── TIER 2: SELL 10% AT 2.0x (LOCKS 0.0240 SOL = +20% GUARANTEED + 16% MOONBAG!) ──
+                # ── TIER 2: SELL 18% AT 2.0x (LOCKS 0.0272 SOL = +36% GUARANTEED + 8% MOONBAG!) ──
                 elif trade.half_sold and not trade.tier2_sold and mult >= TIER2_SELL_AT:
-                    sol_back = (trade.sol_invested * 0.10) * TIER2_SELL_AT
+                    sol_back = (trade.sol_invested * 0.18) * TIER2_SELL_AT
                     trade.sol_returned += sol_back
                     trade.tier2_sold = True
-                    log.info(f"TIER 2 SELL (10%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (Total Returned: {trade.sol_returned:.4f} SOL)")
-                    await sell_coin(session, trade, 0.10, "Tier 2 (10% at 2.0x)", wallet_pubkey, private_key_b58)
+                    log.info(f"TIER 2 SELL (18%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (Total Returned: {trade.sol_returned:.4f} SOL)")
+                    await sell_coin(session, trade, 0.18, "Tier 2 (18% at 2.0x)", wallet_pubkey, private_key_b58)
 
-                # ── TRAILING STOP LOSS (16% MOONBAG) ──────────────────────
+                # ── TRAILING STOP LOSS (8% MOONBAG) ───────────────────────
                 elif trade.half_sold and mult <= max(0.95, trade.peak_mult * (1.0 - TRAILING_STOP_PCT)):
-                    rem_fraction = 0.16 if trade.tier2_sold else 0.26
+                    rem_fraction = 0.08 if trade.tier2_sold else 0.26
                     sol_back = (trade.sol_invested * rem_fraction) * mult
                     trade.sol_returned += sol_back
                     trade.closed = True
@@ -411,7 +463,7 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
 
                 # ── 24HR MOONBAG EXIT ─────────────────────────────────────
                 elif trade.elapsed_hrs >= MOONBAG_EXIT_HRS:
-                    rem_fraction = 0.16 if trade.tier2_sold else (0.26 if trade.half_sold else 1.0)
+                    rem_fraction = 0.08 if trade.tier2_sold else (0.26 if trade.half_sold else 1.0)
                     sol_back = (trade.sol_invested * rem_fraction) * mult
                     trade.sol_returned += sol_back
                     trade.closed = True
@@ -444,7 +496,8 @@ async def on_new_coin(
     entry_mc: float,
     mc_1min: Optional[float] = None,
     wallet_pubkey: str = "",
-    private_key_b58: str = ""
+    private_key_b58: str = "",
+    pair_created_at: Optional[float] = None
 ):
     """
     Fast two-stage breakout entry:
@@ -458,6 +511,12 @@ async def on_new_coin(
         session = aiohttp.ClientSession(connector=connector)
 
     try:
+        if pair_created_at is not None:
+            coin_age = time.time() - pair_created_at
+            if 0 <= coin_age < MIN_COIN_AGE_SECS:
+                log.info(f"SKIP (Coin age {coin_age:.0f}s < {MIN_COIN_AGE_SECS}s launch-dump filter) | {name}")
+                return
+
         if entry_mc < MIN_DISCOVERY_MC or entry_mc > MAX_ENTRY_MC:
             log.info(f"SKIP (Discovery MC ${entry_mc/1000:.1f}k outside ${MIN_DISCOVERY_MC/1000:.0f}k-${MAX_ENTRY_MC/1000:.0f}k zone) | {name}")
             return
@@ -548,5 +607,5 @@ async def on_whale_buy(
 # ── STANDALONE TEST ───────────────────────────────────────────────────────────
 if __name__ == "__main__":
     log.info(f"AutoTrader starting in {'PAPER' if PAPER_MODE else 'LIVE'} mode")
-    log.info(f"Trade size: {TRADE_AMOUNT_SOL} SOL | Stop loss: {STOP_LOSS_AT*100:.0f}% | Half sell: {HALF_SELL_AT}x | Exit: {MOONBAG_EXIT_HRS}hr")
+    log.info(f"Trade size: {TRADE_AMOUNT_SOL} SOL | Stop loss: {STOP_LOSS_AT*100:.0f}% | Tier 1: {TIER1_SELL_AT}x | Tier 2: {TIER2_SELL_AT}x | Exit: {MOONBAG_EXIT_HRS}hr")
     asyncio.run(monitor_loop())

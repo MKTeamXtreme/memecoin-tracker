@@ -160,9 +160,9 @@ async def process_pairs(pairs: List[dict]) -> List[dict]:
                 score -= 100
                 breakdown["flags"].append(f"WASH TRADING / BUNDLE DETECTED: Avg trade ${avg_trade:.0f}")
 
-        # Block coins that already show sniper/bundle concentration at discovery (e.g. SWARMPAD)
+        # Block coins that already show sniper/bundle concentration or stale-cache post-rug curve at discovery
         if score >= 70:
-            is_rug, rug_msg = await check_rug_risk(mint)
+            is_rug, rug_msg = await check_rug_risk(mint, expected_mc=mc)
             if is_rug:
                 score = max(0, score - 50)
                 breakdown["flags"].append(f"BUNDLE RISK BLOCKED (-50 pts): {rug_msg}")
@@ -195,7 +195,8 @@ async def process_pairs(pairs: List[dict]) -> List[dict]:
             if score >= MIN_TRADE_SCORE:
                 asyncio.create_task(on_new_coin(
                     session=None, mint=mint,
-                    name=raw["name"], entry_mc=mc
+                    name=raw["name"], entry_mc=mc,
+                    pair_created_at=(created_ms / 1000) if created_ms else None
                 ))
 
     return new_found

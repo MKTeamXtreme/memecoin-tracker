@@ -4,8 +4,8 @@ from database import get_connection
 
 # Strategy: V4 KOTH-Frontrun Ladder
 PAPER_INVEST      = 0.02
-PAPER_HALF_AT     = 1.35  # Tier 1: sell 75% at 1.35x KOTH wall (returns 0.02025 SOL = 101.25% principal banked!)
-PAPER_TIER2_AT    = 2.0   # Tier 2: sell 15% at 2.0x (returns 0.0060 SOL -> 0.02625 SOL = +31.25% guaranteed!)
+PAPER_HALF_AT     = 1.35  # Tier 1: sell 74% at 1.35x KOTH wall (returns 0.0200 SOL = 100.0% principal banked!)
+PAPER_TIER2_AT    = 2.0   # Tier 2: sell 18% at 2.0x (returns +0.0072 SOL -> 0.0272 SOL = +36.0% guaranteed + 8% Moonbag!)
 PAPER_EXIT_HRS    = 24    # close moonbag after 24 hours
 TRAILING_STOP_PCT = 0.35  # Trailing stop loss (35% drop from peak)
 
@@ -97,9 +97,9 @@ def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float):
             trade["sold_half"]     = 1
             trade["sold_half_sol"] = sold_half_sol
 
-        # Tier 2: Sell 10% at 2.0x (locks another 0.0040 SOL -> 0.0240 SOL = +20% banked + 16% Moonbag!)
+        # Tier 2: Sell 18% at 2.0x (locks another 0.0072 SOL -> 0.0272 SOL = +36% banked + 8% Moonbag!)
         if trade["sold_half"] and not trade.get("sold_tier2") and current_mc >= trade["entry_mc"] * PAPER_TIER2_AT:
-            sold_tier2_sol = (trade["invested_sol"] * 0.10) * PAPER_TIER2_AT
+            sold_tier2_sol = (trade["invested_sol"] * 0.18) * PAPER_TIER2_AT
             updates["sold_tier2"]     = 1
             updates["sold_tier2_sol"] = sold_tier2_sol
             trade["sold_tier2"]     = 1
@@ -117,7 +117,7 @@ def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float):
 
         # Determine remaining position fraction
         if trade.get("sold_tier2") or updates.get("sold_tier2"):
-            rem_frac = 0.16
+            rem_frac = 0.08
         elif trade.get("sold_half") or updates.get("sold_half"):
             rem_frac = 0.26
         else:
