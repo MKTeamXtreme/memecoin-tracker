@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 
 import aiohttp
 from paper import update_paper_trade
+from pumpportal import fetch_pump_curve_mc_usd
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 PAPER_MODE       = True          # Set False to trade real SOL
@@ -92,6 +93,12 @@ closed_trades: list = []
 
 # ── PRICE FETCHER ─────────────────────────────────────────────────────────────
 async def fetch_current_mc(session: aiohttp.ClientSession, mint: str) -> Optional[float]:
+    # 1. Zero-lag direct on-chain Pump.fun bonding-curve read (falls through to DexScreener once graduated)
+    onchain_mc = await fetch_pump_curve_mc_usd(session, mint, SOLANA_RPC)
+    if onchain_mc is not None and onchain_mc > 0:
+        return onchain_mc
+
+    # 2. DexScreener fallback (for graduated PumpSwap/Raydium AMM pools or RPC hiccups)
     try:
         async with session.get(
             DEXSCREENER_URL.format(mint),

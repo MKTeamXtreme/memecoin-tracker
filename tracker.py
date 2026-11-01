@@ -7,6 +7,8 @@ import time
 import aiohttp
 from database import get_pending_tracking, update_mc_snapshot, mark_tracking_done, get_connection
 from paper import update_paper_trade
+from autotrader import SOLANA_RPC
+from pumpportal import fetch_pump_curve_mc_usd
 
 DEXSCREENER_URL = "https://api.dexscreener.com/latest/dex/tokens/{}"
 
@@ -21,13 +23,15 @@ async def fetch_mc(session: aiohttp.ClientSession, mint: str) -> float | None:
             data = await resp.json(content_type=None)
             pairs = data.get("pairs") or []
             if not pairs:
-                return None
+                return await fetch_pump_curve_mc_usd(session, mint, SOLANA_RPC)
             # Pick pair with highest liquidity
             best = max(pairs, key=lambda p: (p.get("liquidity") or {}).get("usd") or 0)
             mc = best.get("marketCap") or best.get("fdv")
-            return float(mc) if mc else None
+            if mc:
+                return float(mc)
+            return await fetch_pump_curve_mc_usd(session, mint, SOLANA_RPC)
     except Exception:
-        return None
+        return await fetch_pump_curve_mc_usd(session, mint, SOLANA_RPC)
 
 
 async def run_outcome_update():

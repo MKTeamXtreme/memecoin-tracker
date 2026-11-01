@@ -30,7 +30,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from database import init_db, save_coin, get_recent_coins, get_stats, get_biggest_winners
 from paper import init_paper_db, open_paper_trade, get_paper_stats, get_recent_paper_trades
-from autotrader import on_new_coin, monitor_loop, PAPER_MODE, TRADE_AMOUNT_SOL, check_rug_risk
+from autotrader import on_new_coin, monitor_loop, PAPER_MODE, TRADE_AMOUNT_SOL, SOLANA_RPC, check_rug_risk
+from pumpportal import run_pumpportal_feed, IncubatedToken
 from scorer import score_coin
 from tracker import run_outcome_update
 from news import refresh_trends, _trending_symbols, _news_keywords
@@ -202,6 +203,106 @@ async def process_pairs(pairs: List[dict]) -> List[dict]:
     return new_found
 
 
+# ── Real-Time Source: PumpPortal WebSocket + On-Chain Bonding Curve ───────────
+async def handle_pumpportal_candidate(tok: IncubatedToken, live_mc_usd: float):
+    """Process a token caught live entering $18.5k-$26k on-chain from PumpPortal."""
+    mint = tok.mint
+    if not mint or mint in seen_mints:
+        return
+    seen_mints.add(mint)
+
+    # Check DexScreener once for any paid profile metadata (image/socials) & 24h wash-trade check
+    raw = {
+        "mint":                       mint,
+        "name":                       tok.name,
+        "symbol":                     tok.symbol,
+        "image_uri":                  "",
+        "description":                "",
+        "twitter":                    "",
+        "telegram":                   "",
+        "website":                    "",
+        "reply_count":                0,
+        "usd_market_cap":             live_mc_usd,
+        "is_currently_live":          False,
+        "king_of_the_hill_timestamp": None,
+        "created_timestamp":          tok.created_at * 1000,
+    }
+    vol = 0.0
+    total_txns = 0
+
+    connector = aiohttp.TCPConnector(ssl=False)
+    try:
+        async with aiohttp.ClientSession(headers=HEADERS, connector=connector) as session:
+            async with session.get(
+                DEXSCREENER_PAIRS_URL.format(mint),
+                timeout=aiohttp.ClientTimeout(total=6),
+            ) as resp:
+                if resp.status == 200:
+                    pdata = await resp.json(content_type=None)
+                    pairs = [p for p in (pdata.get("pairs") or []) if p.get("chainId") == "solana"]
+                    if pairs:
+                        best = max(pairs, key=lambda p: (p.get("liquidity") or {}).get("usd") or 0)
+                        dex_raw = pair_to_raw(best)
+                        dex_raw["usd_market_cap"] = live_mc_usd
+                        if not dex_raw.get("created_timestamp"):
+                            dex_raw["created_timestamp"] = tok.created_at * 1000
+                        raw = dex_raw
+                        vol = float((best.get("volume") or {}).get("h24") or 0)
+                        txns = (best.get("txns") or {}).get("h24") or {}
+                        total_txns = int(txns.get("buys") or 0) + int(txns.get("sells") or 0)
+    except Exception:
+        pass
+
+    score, breakdown = score_coin(raw)
+
+    if score >= 70 and total_txns > 0:
+        avg_trade = vol / total_txns
+        if avg_trade > 1500:
+            score -= 100
+            breakdown["flags"].append(f"WASH TRADING / BUNDLE DETECTED: Avg trade ${avg_trade:.0f}")
+
+    if score >= 70:
+        is_rug, rug_msg = await check_rug_risk(mint, expected_mc=live_mc_usd)
+        if is_rug:
+            score = max(0, score - 50)
+            breakdown["flags"].append(f"BUNDLE RISK BLOCKED (-50 pts): {rug_msg}")
+
+    if score < MIN_SCORE:
+        return
+
+    created_ts = (raw["created_timestamp"] / 1000) if raw.get("created_timestamp") else tok.created_at
+    record = {
+        "mint":            mint,
+        "name":            raw["name"],
+        "symbol":          raw["symbol"],
+        "image_uri":       raw["image_uri"],
+        "description":     raw["description"],
+        "twitter_url":     raw["twitter"],
+        "telegram_url":    raw["telegram"],
+        "website_url":     raw["website"],
+        "has_twitter":     bool(raw["twitter"]),
+        "has_telegram":    bool(raw["telegram"]),
+        "has_website":     bool(raw["website"]),
+        "reply_count":     0,
+        "created_at":      created_ts,
+        "detected_at":     time.time(),
+        "initial_mc":      live_mc_usd,
+        "score":           score,
+        "score_breakdown": breakdown,
+    }
+
+    if save_coin(record):
+        age_s = time.time() - created_ts
+        print(f"[PumpPortal] LIVE HIT | {raw['name']} (${raw['symbol']}) | MC ${live_mc_usd/1000:.1f}k | Age {age_s:.0f}s | Score {score}")
+        await broadcast({"type": "new_coin", "coin": record})
+        if score >= MIN_TRADE_SCORE:
+            asyncio.create_task(on_new_coin(
+                session=None, mint=mint,
+                name=raw["name"], entry_mc=live_mc_usd,
+                pair_created_at=created_ts
+            ))
+
+
 # ── Source A: rotating keyword search ─────────────────────────────────────────
 async def poll_search(session: aiohttp.ClientSession, url: str) -> List[dict]:
     try:
@@ -336,18 +437,21 @@ async def lifespan(app: FastAPI):
     await refresh_trends()
 
     poll_task   = asyncio.create_task(poll_loop())
+    pump_task   = asyncio.create_task(run_pumpportal_feed(SOLANA_RPC, seen_mints, handle_pumpportal_candidate))
     track_task  = asyncio.create_task(track_loop())
     news_task   = asyncio.create_task(news_loop())
     trader_task = asyncio.create_task(monitor_loop())
     whale_task  = asyncio.create_task(monitor_whale())
     mode = 'PAPER' if PAPER_MODE else 'LIVE'
     print(f"[Boot] AutoTrader started in {mode} mode ({TRADE_AMOUNT_SOL} SOL per trade)")
+    print("[Boot] PumpPortal real-time WebSocket + on-chain curve feed started")
     print("[Boot] Background tasks started")
     print("[Boot] Open http://localhost:8000 in your browser")
 
     yield
 
     poll_task.cancel()
+    pump_task.cancel()
     track_task.cancel()
     news_task.cancel()
     trader_task.cancel()
