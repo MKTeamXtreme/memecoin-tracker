@@ -28,7 +28,7 @@ PUMPFUN_PROGRAM   = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEw
 WSOL_MINT         = "So11111111111111111111111111111111111111112"
 
 # Incubator bounds
-MIN_INCUBATE_SECS = 110     # Match V4.1 MIN_COIN_AGE_SECS (110s launch-dump filter)
+MIN_INCUBATE_SECS = 125     # 125s incubation + 45s staircase = >=170s buy age (filters 156s-162s bundler rug wave)
 MAX_INCUBATE_SECS = 900     # Evict tokens that haven't reached $18.5k within 15 minutes
 DEAD_FLOOR_SECS   = 160     # After 160s, evict dead tokens still sitting < $4.5k floor
 DEAD_FLOOR_USD    = 4_500.0

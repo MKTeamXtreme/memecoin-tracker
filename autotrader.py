@@ -27,20 +27,20 @@ from pumpportal import fetch_pump_curve_mc_usd
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 PAPER_MODE       = True          # Set False to trade real SOL
 TRADE_AMOUNT_SOL = 0.02          # SOL per trade
-TIER1_SELL_AT    = 1.35          # Tier 1: Sell 74% at 1.35x (locks 0.0200 SOL = 100.0% principal back at +35%!)
-TIER2_SELL_AT    = 2.0           # Tier 2: Sell 18% at 2.0x (locks +0.0072 SOL -> 0.0272 SOL = +36% guaranteed + 8% Moonbag!)
-MIN_COIN_AGE_SECS= 110           # Min token age at discovery (110s filters slot-0/early launch dumps: 51% vs 36% WR across 554 coins)
-MIN_DISCOVERY_MC = 18_500        # Min discovery MC at min 0 ($18.5k-$26k Golden Zone)
-MAX_ENTRY_MC     = 26_000        # Max discovery MC at min 0
-MIN_1MIN_MC      = 24_500        # Min 45s-50s staircase buy MC ($24.5k floor)
-MAX_1MIN_MC      = 39_500        # Max 45s-50s staircase buy MC ($39.5k cap; skips $30.8k-$33.8k KOTH dump wall)
+TIER1_SELL_AT    = 1.35          # Tier 1: Sell 62% at 1.35x (banks 0.837x principal & raises floor to 0.95x)
+TIER2_SELL_AT    = 1.55          # Tier 2: Sell 23% at 1.55x ($40k-$47k pre-graduation wall -> locks +19.4% cash + 15% Moonbag!)
+MIN_COIN_AGE_SECS= 125           # Min token age at discovery (125s + 45s staircase = >=170s buy age, filtering 156s-162s bundler rugs)
+MIN_DISCOVERY_MC = 18_500        # Min discovery MC at min 0 ($18.5k-$25.5k Golden Zone)
+MAX_ENTRY_MC     = 25_500        # Max discovery MC at min 0
+MIN_1MIN_MC      = 24_500        # Min 45s staircase buy MC ($24.5k floor)
+MAX_1MIN_MC      = 30_800        # Max 45s staircase buy MC ($30.8k cap: enters strictly pre-KOTH so 1.55x is below $50k wall)
 KOTH_TRAP_LOW    = 30_800        # Lower bound of Pump.fun King-of-the-Hill dump wall ($30.8k-$33.8k)
-KOTH_TRAP_HIGH   = 33_800        # Upper bound of KOTH dump wall (coins must either be pre-KOTH <=$30.8k or broken above >=$33.8k)
-STOP_LOSS_AT     = 0.78          # Tighter initial stop loss at 78% of entry (-22%)
-TRAILING_STOP_PCT= 0.35          # Trailing stop loss for moonbag (35% drop from peak)
+KOTH_TRAP_HIGH   = 33_800        # Upper bound of KOTH dump wall
+STOP_LOSS_AT     = 0.58          # Structural stop loss at 0.58x (avoids 0.60x-0.75x first-pullback shakeouts on 10x-48x runners)
+TRAILING_STOP_PCT= 0.28          # Trailing stop loss for 15% moonbag (28% drop from peak = 0.72x peak)
 MOONBAG_EXIT_HRS = 24            # Sell moonbag after this many hours
-MIN_1MIN_MULT    = 1.15          # Min 45s staircase mult from discovery (+15%)
-MAX_1MIN_MULT    = 1.95          # Max 45s staircase mult from discovery (+95% cap for KOTH breakouts)
+MIN_1MIN_MULT    = 1.22          # Min 45s staircase mult from discovery (+22%)
+MAX_1MIN_MULT    = 1.54          # Max 45s staircase mult from discovery (+54% cap: filters vertical blow-off tops)
 MAX_OPEN_TRADES  = 4             # Max concurrent active (un-banked) trades for 0.2 SOL bankroll safety
 POLL_SECS        = 3             # How often to check open trade prices (seconds)
 
@@ -429,37 +429,37 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
                 # Sync paper trading database in real time with actual current_mc
                 update_paper_trade(mint, current_mc, elapsed_secs=elapsed_secs)
 
-                # ── INITIAL STOP LOSS (-22% at 0.78x) OR 40s FAILED-BREAKOUT TIME-STOP ──
-                is_failed_breakout = (not trade.half_sold and elapsed_secs >= 40 and mult <= 0.95 and trade.peak_mult < 1.18)
+                # ── INITIAL STOP LOSS (0.58x) OR 180s STAGNATION TIME-STOP ──
+                is_failed_breakout = (not trade.half_sold and elapsed_secs >= 180 and mult <= 0.95 and trade.peak_mult < 1.18)
                 if (mult <= STOP_LOSS_AT or is_failed_breakout) and not trade.half_sold:
                     sol_back = trade.sol_invested * mult
                     trade.sol_returned += sol_back
                     trade.closed = True
-                    reason_str = "failed breakout time-stop" if is_failed_breakout else "stop loss"
+                    reason_str = "180s stagnation time-stop" if is_failed_breakout else "stop loss"
                     trade.close_reason = f"{reason_str} at {mult:.2f}x"
                     log.info(f"STOP ({reason_str.upper()}) | {trade.name} | {mult:.2f}x | PnL: {trade.pnl:+.4f} SOL")
                     await sell_coin(session, trade, 1.0, reason_str, wallet_pubkey, private_key_b58)
                     to_close.append(mint)
 
-                # ── TIER 1: SELL 74% AT 1.35x KOTH WALL (LOCKS 0.0200 SOL = 100.0% PRINCIPAL BACK!) ──
+                # ── TIER 1: SELL 62% AT 1.35x (BANKS 83.7% PRINCIPAL & RAISES STOP TO 0.95x) ──
                 elif not trade.half_sold and mult >= TIER1_SELL_AT:
-                    sol_back = (trade.sol_invested * 0.74) * TIER1_SELL_AT
+                    sol_back = (trade.sol_invested * 0.62) * TIER1_SELL_AT
                     trade.sol_returned += sol_back
                     trade.half_sold = True
-                    log.info(f"TIER 1 SELL (74%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (100% principal back!)")
-                    await sell_coin(session, trade, 0.74, "Tier 1 (74% at 1.35x KOTH)", wallet_pubkey, private_key_b58)
+                    log.info(f"TIER 1 SELL (62%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL")
+                    await sell_coin(session, trade, 0.62, "Tier 1 (62% at 1.35x)", wallet_pubkey, private_key_b58)
 
-                # ── TIER 2: SELL 18% AT 2.0x (LOCKS 0.0272 SOL = +36% GUARANTEED + 8% MOONBAG!) ──
+                # ── TIER 2: SELL 23% AT 1.55x PRE-GRADUATION WALL (LOCKS +19.4% CASH + 15% MOONBAG!) ──
                 elif trade.half_sold and not trade.tier2_sold and mult >= TIER2_SELL_AT:
-                    sol_back = (trade.sol_invested * 0.18) * TIER2_SELL_AT
+                    sol_back = (trade.sol_invested * 0.23) * TIER2_SELL_AT
                     trade.sol_returned += sol_back
                     trade.tier2_sold = True
-                    log.info(f"TIER 2 SELL (18%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (Total Returned: {trade.sol_returned:.4f} SOL)")
-                    await sell_coin(session, trade, 0.18, "Tier 2 (18% at 2.0x)", wallet_pubkey, private_key_b58)
+                    log.info(f"TIER 2 SELL (23%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (Total Returned: {trade.sol_returned:.4f} SOL)")
+                    await sell_coin(session, trade, 0.23, "Tier 2 (23% at 1.55x pre-grad wall)", wallet_pubkey, private_key_b58)
 
-                # ── TRAILING STOP LOSS (8% MOONBAG) ───────────────────────
+                # ── TRAILING STOP LOSS (15% MOONBAG / 38% POST-T1) ───────────────────────
                 elif trade.half_sold and mult <= max(0.95, trade.peak_mult * (1.0 - TRAILING_STOP_PCT)):
-                    rem_fraction = 0.08 if trade.tier2_sold else 0.26
+                    rem_fraction = 0.15 if trade.tier2_sold else 0.38
                     sol_back = (trade.sol_invested * rem_fraction) * mult
                     trade.sol_returned += sol_back
                     trade.closed = True
@@ -470,7 +470,7 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
 
                 # ── 24HR MOONBAG EXIT ─────────────────────────────────────
                 elif trade.elapsed_hrs >= MOONBAG_EXIT_HRS:
-                    rem_fraction = 0.08 if trade.tier2_sold else (0.26 if trade.half_sold else 1.0)
+                    rem_fraction = 0.15 if trade.tier2_sold else (0.38 if trade.half_sold else 1.0)
                     sol_back = (trade.sol_invested * rem_fraction) * mult
                     trade.sol_returned += sol_back
                     trade.closed = True
@@ -563,8 +563,11 @@ async def on_new_coin(
             return
 
         mult_1min = mc_1min / entry_mc if entry_mc > 0 else 0
+        if mult_1min < MIN_1MIN_MULT:
+            log.info(f"SKIP (45s mult {mult_1min:.2f}x < {MIN_1MIN_MULT}x floor) | {name}")
+            return
         if mult_1min > MAX_1MIN_MULT:
-            log.info(f"SKIP (already pumped {mult_1min:.2f}x > {MAX_1MIN_MULT}x cap — avoiding top) | {name}")
+            log.info(f"SKIP (already pumped {mult_1min:.2f}x > {MAX_1MIN_MULT}x cap — avoiding blow-off top) | {name}")
             return
 
         actual_entry = mc_1min
