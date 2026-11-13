@@ -29,7 +29,7 @@ PAPER_MODE       = True          # Set False to trade real SOL
 TRADE_AMOUNT_SOL = 0.02          # SOL per trade
 TIER1_SELL_AT    = 1.35          # Tier 1: Sell 62% at 1.35x (banks 0.837x principal & raises floor to 0.95x)
 TIER2_SELL_AT    = 1.55          # Tier 2: Sell 23% at 1.55x ($40k-$47k pre-graduation wall -> locks +19.4% cash + 15% Moonbag!)
-MIN_COIN_AGE_SECS= 125           # Min token age at discovery (125s + 45s staircase = >=170s buy age, filtering 156s-162s bundler rugs)
+MIN_COIN_AGE_SECS= 110           # Min token age at discovery (110s filters slot-0 dumps while keeping 159s-167s organic entries)
 MIN_DISCOVERY_MC = 18_500        # Min discovery MC at min 0 ($18.5k-$25.5k Golden Zone)
 MAX_ENTRY_MC     = 25_500        # Max discovery MC at min 0
 MIN_1MIN_MC      = 24_500        # Min 45s staircase buy MC ($24.5k floor)
