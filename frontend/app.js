@@ -363,7 +363,7 @@ function renderStats(s) {
       if (v5Closed > 0) {
         const wr = Math.round((v5Wins / v5Closed) * 100);
         elV5Wr.textContent = `V5 Win Rate: ${wr}% (${v5Wins}/${v5Closed})`;
-        elV5Wr.style.color = wr >= 50 ? 'var(--success)' : 'var(--amber)';
+        elV5Wr.style.color = wr >= 50 ? 'var(--success)' : 'var(--danger)';
       } else {
         elV5Wr.textContent = 'V5 Win Rate: — (0 closed)';
         elV5Wr.style.color = 'var(--text-muted)';
@@ -439,12 +439,12 @@ function initChart() {
         label: '2x Win %',
         data: [0, 0, 0, 0],
         backgroundColor: [
-          'rgba(168,85,247,.7)',
-          'rgba(16,185,129,.7)',
-          'rgba(245,158,11,.7)',
-          'rgba(244,63,94,.7)',
+          'rgba(255,255,255,.85)',
+          'rgba(212,212,216,.65)',
+          'rgba(161,161,170,.45)',
+          'rgba(113,113,122,.35)',
         ],
-        borderColor: ['#a855f7', '#10b981', '#f59e0b', '#f43f5e'],
+        borderColor: ['#ffffff', '#d4d4d8', '#a1a1aa', '#71717a'],
         borderWidth: 1,
         borderRadius: 4,
       }]
@@ -607,7 +607,7 @@ function renderPaperTable(trades) {
       <tr>
         <td>${time}</td>
         <td class="name-cell" style="cursor:pointer" onclick="copyAddr('${t.mint}', this)">
-          <span style="font-size:10px; padding:2px 4px; border-radius:4px; margin-right:4px; background: ${t.strategy === 'V5' ? '#f59e0b' : (t.strategy === 'V4' ? '#a855f7' : (t.strategy === 'V3' ? '#10b981' : (t.strategy === 'V2' ? 'var(--primary)' : 'var(--bg-lighter)')))}; color: ${t.strategy === 'V5' || t.strategy === 'V4' || t.strategy === 'V3' || t.strategy === 'V2' ? '#fff' : 'var(--text-muted)'}; font-weight:600">${t.strategy || 'V1'}</span>
+          <span style="font-size:10px; padding:2px 5px; border-radius:4px; margin-right:6px; background: ${t.strategy === 'V5' ? '#ffffff' : (t.strategy === 'V4' ? '#27272a' : '#18181b')}; color: ${t.strategy === 'V5' ? '#000000' : (t.strategy === 'V4' ? '#e4e4e7' : '#71717a')}; border: 1px solid #2e2e34; font-weight:700">${t.strategy || 'V1'}</span>
           ${t.name || '?'} ${t.is_news ? '<span title="Grand Slam News Match!" style="margin-left:5px">📰</span>' : ''}
           <span class="addr-hint" style="font-size:10px;margin-left:8px;color:var(--text-muted)">click to copy</span>
         </td>
