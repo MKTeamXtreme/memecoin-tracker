@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Solana Memecoin Tracker — Trial Run</title>
   <meta name="description" content="Live Solana memecoin discovery and prediction accuracy tracker — trial run dashboard." />
-  <link rel="stylesheet" href="/static/style.css?v=2" />
+  <link rel="stylesheet" href="/static/style.css?v=3" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -23,8 +23,8 @@
   </div>
 
   <div class="header-stats">
-    <a href="/api/export_db" download="coins.db" class="btn btn-ghost" style="margin-right: 10px; font-size: 12px; border: 1px solid var(--border-color); text-decoration: none;">💾 Export Data</a>
-    <button class="btn btn-ghost" id="notif-btn" onclick="toggleNotifications()" style="margin-right: 20px; font-size: 12px; border: 1px solid var(--border-color);">🔕 Alerts Off</button>
+    <a href="/api/export_db" download="coins.db" class="btn btn-ghost" style="margin-right: 10px; padding: 6px 12px; font-size: 12px; border: 1px solid var(--border); text-decoration: none;">💾 Export Data</a>
+    <button class="btn btn-ghost" id="notif-btn" onclick="toggleNotifications()" style="margin-right: 20px; padding: 6px 12px; font-size: 12px; border: 1px solid var(--border);">🔕 Alerts Off</button>
     <div class="hstat">
       <div class="hstat-value" id="h-total">0</div>
       <div class="hstat-label">Total Tracked</div>
@@ -185,6 +185,6 @@
 <!-- Toast container -->
 <div id="toast-container"></div>
 
-<script src="/static/app.js?v=3"></script>
+<script src="/static/app.js?v=4"></script>
 </body>
 </html>

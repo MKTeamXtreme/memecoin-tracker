@@ -4,11 +4,11 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg:            #000000;
-  --bg-card:       #0b0b0d;
-  --bg-card-hover: #141417;
-  --border:        #1f1f24;
-  --border-glow:   #34343c;
+  --bg:            #050506;
+  --bg-card:       #101013;
+  --bg-card-hover: #18181c;
+  --border:        #232328;
+  --border-glow:   #3f3f46;
   --primary:       #ffffff;
   --primary-dim:   rgba(255,255,255,.08);
   --primary-glow:  rgba(255,255,255,.22);
@@ -19,7 +19,7 @@
   --warn:          #a1a1aa;
   --warn-dim:      rgba(161,161,170,.12);
   --info:          #22c55e;
-  --text:          #f4f4f5;
+  --text:          #fafafa;
   --text-muted:    #71717a;
   --text-dim:      #a1a1aa;
   --radius:        10px;
