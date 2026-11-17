@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Solana Memecoin Tracker — Trial Run</title>
   <meta name="description" content="Live Solana memecoin discovery and prediction accuracy tracker — trial run dashboard." />
-  <link rel="stylesheet" href="/static/style.css?v=3" />
+  <link rel="stylesheet" href="/static/style.css?v=4" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -23,8 +23,8 @@
   </div>
 
   <div class="header-stats">
-    <a href="/api/export_db" download="coins.db" class="btn btn-ghost" style="margin-right: 10px; padding: 6px 12px; font-size: 12px; border: 1px solid var(--border); text-decoration: none;">💾 Export Data</a>
-    <button class="btn btn-ghost" id="notif-btn" onclick="toggleNotifications()" style="margin-right: 20px; padding: 6px 12px; font-size: 12px; border: 1px solid var(--border);">🔕 Alerts Off</button>
+    <a href="/api/export_db" download="coins.db" class="btn btn-ghost" style="margin-right: 10px; font-size: 12px; border: 1px solid var(--border-color); text-decoration: none;">💾 Export Data</a>
+    <button class="btn btn-ghost" id="notif-btn" onclick="toggleNotifications()" style="margin-right: 20px; font-size: 12px; border: 1px solid var(--border-color);">🔕 Alerts Off</button>
     <div class="hstat">
       <div class="hstat-value" id="h-total">0</div>
       <div class="hstat-label">Total Tracked</div>
@@ -87,9 +87,9 @@
       </div>
       <div class="stat-card">
         <div class="stat-label">Paper Trading (100s)</div>
-        <div class="stat-value" id="s-paper-pnl-v5" style="color:#ffffff; font-size: 20px;">V5: 0.00 SOL</div>
+        <div class="stat-value" id="s-paper-pnl-v5" style="color:#f59e0b; font-size: 20px;">V5: 0.00 SOL</div>
         <div class="stat-sub" id="s-paper-v5-wr" style="margin-top: 2px; font-weight: 600;">V5 Win Rate: —</div>
-        <div class="stat-value" id="s-paper-pnl-v4" style="color:var(--text-dim); font-size: 13px; margin-top: 4px;">V4: 0.00 SOL</div>
+        <div class="stat-value" id="s-paper-pnl-v4" style="color:var(--primary); font-size: 14px; margin-top: 4px;">V4: 0.00 SOL</div>
         <div class="stat-value" id="s-paper-pnl-v3" style="color:var(--text-muted); font-size: 13px; margin-top: 2px;">V3: 0.00 SOL</div>
         <div class="stat-value" id="s-paper-pnl-v2" style="color:var(--text-muted); font-size: 12px; margin-top: 2px;">V2: 0.00 SOL</div>
         <div class="stat-value" id="s-paper-pnl" style="color:var(--text-muted); font-size: 11px; margin-top: 2px;">V1: 0.00 SOL</div>
@@ -114,7 +114,7 @@
         <div class="bracket-cards" id="brackets">
           <div class="bracket-row">
             <span class="bracket-label">100 🎯</span>
-            <div class="bracket-bar-wrap"><div class="bracket-bar" style="width:0%; background: #ffffff" id="bar-perf"></div></div>
+            <div class="bracket-bar-wrap"><div class="bracket-bar" style="width:0%; background: #a855f7" id="bar-perf"></div></div>
             <span class="bracket-stat" id="bs-perf">No data yet</span>
           </div>
           <div class="bracket-row">
@@ -142,9 +142,9 @@
         <div class="table-tabs">
           <button class="tab-btn active" id="tab-history" onclick="switchTab('history')">📋 Prediction History</button>
           <button class="tab-btn" id="tab-winners" onclick="switchTab('winners')">🏆 Biggest Winners</button>
-          <button class="tab-btn" id="tab-paper-v5" onclick="switchTab('paper-v5')">🔥 V5 Trades</button>
-          <button class="tab-btn" id="tab-paper-v4" onclick="switchTab('paper-v4')">⚡ V4 Trades</button>
-          <button class="tab-btn" id="tab-paper-v3" onclick="switchTab('paper-v3')">🚀 V3 Trades</button>
+          <button class="tab-btn" id="tab-paper-v5" onclick="switchTab('paper-v5')" style="color:#f59e0b; font-weight:600">🔥 V5 Trades</button>
+          <button class="tab-btn" id="tab-paper-v4" onclick="switchTab('paper-v4')" style="color:#a855f7; font-weight:600">⚡ V4 Trades</button>
+          <button class="tab-btn" id="tab-paper-v3" onclick="switchTab('paper-v3')" style="color:#10b981; font-weight:600">🚀 V3 Trades</button>
           <button class="tab-btn" id="tab-paper" onclick="switchTab('paper')">🤖 All Paper Trades</button>
         </div>
         <div class="table-controls">
@@ -185,6 +185,6 @@
 <!-- Toast container -->
 <div id="toast-container"></div>
 
-<script src="/static/app.js?v=4"></script>
+<script src="/static/app.js?v=5"></script>
 </body>
 </html>
