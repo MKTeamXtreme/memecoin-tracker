@@ -334,7 +334,7 @@ async def buy_coin(
         return
 
     from paper import open_paper_trade
-    open_paper_trade(mint, entry_mc, invest_amt, strategy="V4")
+    open_paper_trade(mint, entry_mc, invest_amt, strategy="V5")
 
     open_trades[mint] = Trade(
         is_news_match=is_news_match,
@@ -379,7 +379,7 @@ def restore_open_v4_trades():
                    COALESCE(pt.sold_tier2_sol, 0) as sold_tier2_sol, pt.peak_mc, pt.created_at
             FROM paper_trades pt
             LEFT JOIN coins c ON c.mint = pt.mint
-            WHERE pt.status = 'OPEN' AND pt.strategy = 'V4'
+            WHERE pt.status = 'OPEN' AND pt.strategy IN ('V4', 'V5')
         """).fetchall()
         conn.close()
         for r in rows:

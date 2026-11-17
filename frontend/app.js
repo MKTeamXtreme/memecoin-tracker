@@ -24,6 +24,8 @@ function switchTab(tab) {
   if (paperV3Tab) paperV3Tab.classList.toggle('active', tab === 'paper-v3');
   const paperV4Tab = document.getElementById('tab-paper-v4');
   if (paperV4Tab) paperV4Tab.classList.toggle('active', tab === 'paper-v4');
+  const paperV5Tab = document.getElementById('tab-paper-v5');
+  if (paperV5Tab) paperV5Tab.classList.toggle('active', tab === 'paper-v5');
   
   if (tab === 'winners') {
     fetch(`${API_BASE}/biggest_winners`)
@@ -33,6 +35,16 @@ function switchTab(tab) {
         renderTable(winnerCoins);
       })
       .catch(() => renderTable(allCoins));
+  } else if (tab === 'paper-v5') {
+    fetch(`${API_BASE}/paper_trades?limit=100`)
+      .then(r => r.json())
+      .then(trades => {
+        const v5Trades = trades.filter(t => t.strategy === 'V5');
+        renderPaperTable(v5Trades);
+      })
+      .catch(() => {
+        document.getElementById('history-body').innerHTML = '<tr><td colspan="10" style="text-align:center">Error loading V5 paper trades</td></tr>';
+      });
   } else if (tab === 'paper-v4') {
     fetch(`${API_BASE}/paper_trades?limit=100`)
       .then(r => r.json())
@@ -332,15 +344,22 @@ function renderStats(s) {
   document.getElementById('s-with-outcomes').textContent = s.brackets?.reduce((a,b) => a + (b.total||0), 0) || 0;
 
   if (s.paper) {
+    const v5Profit = s.paper.v5_profit_sol || 0.0;
     const v4Profit = s.paper.v4_profit_sol || 0.0;
     const v3Profit = s.paper.v3_profit_sol || 0.0;
     const v2Profit = s.paper.v2_profit_sol || 0.0;
     const v1Profit = s.paper.v1_profit_sol || 0.0;
 
+    const elV5 = document.getElementById('s-paper-pnl-v5');
+    if (elV5) {
+      elV5.textContent = `V5: ${v5Profit > 0 ? '+' : ''}${v5Profit.toFixed(2)} SOL`;
+      elV5.style.color = v5Profit >= 0 ? 'var(--success)' : 'var(--danger)';
+    }
+
     const elV4 = document.getElementById('s-paper-pnl-v4');
     if (elV4) {
       elV4.textContent = `V4: ${v4Profit > 0 ? '+' : ''}${v4Profit.toFixed(2)} SOL`;
-      elV4.style.color = v4Profit >= 0 ? 'var(--success)' : 'var(--danger)';
+      elV4.style.color = 'var(--text-muted)';
     }
 
     const elV3 = document.getElementById('s-paper-pnl-v3');
@@ -574,7 +593,7 @@ function renderPaperTable(trades) {
       <tr>
         <td>${time}</td>
         <td class="name-cell" style="cursor:pointer" onclick="copyAddr('${t.mint}', this)">
-          <span style="font-size:10px; padding:2px 4px; border-radius:4px; margin-right:4px; background: ${t.strategy === 'V4' ? '#a855f7' : (t.strategy === 'V3' ? '#10b981' : (t.strategy === 'V2' ? 'var(--primary)' : 'var(--bg-lighter)'))}; color: ${t.strategy === 'V4' || t.strategy === 'V3' || t.strategy === 'V2' ? '#fff' : 'var(--text-muted)'}; font-weight:600">${t.strategy || 'V1'}</span>
+          <span style="font-size:10px; padding:2px 4px; border-radius:4px; margin-right:4px; background: ${t.strategy === 'V5' ? '#f59e0b' : (t.strategy === 'V4' ? '#a855f7' : (t.strategy === 'V3' ? '#10b981' : (t.strategy === 'V2' ? 'var(--primary)' : 'var(--bg-lighter)')))}; color: ${t.strategy === 'V5' || t.strategy === 'V4' || t.strategy === 'V3' || t.strategy === 'V2' ? '#fff' : 'var(--text-muted)'}; font-weight:600">${t.strategy || 'V1'}</span>
           ${t.name || '?'} ${t.is_news ? '<span title="Grand Slam News Match!" style="margin-left:5px">📰</span>' : ''}
           <span class="addr-hint" style="font-size:10px;margin-left:8px;color:var(--text-muted)">click to copy</span>
         </td>
