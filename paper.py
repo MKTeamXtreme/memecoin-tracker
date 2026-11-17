@@ -164,7 +164,7 @@ def get_paper_stats():
         try:
             total = conn.execute("SELECT COUNT(*) FROM paper_trades").fetchone()[0]
         except sqlite3.OperationalError:
-            return {"total_trades": 0, "open_trades": 0, "closed_trades": 0, "net_profit_sol": 0.0, "v1_profit_sol": 0.0, "v2_profit_sol": 0.0, "v3_profit_sol": 0.0, "v4_profit_sol": 0.0, "v5_profit_sol": 0.0}
+            return {"total_trades": 0, "open_trades": 0, "closed_trades": 0, "net_profit_sol": 0.0, "v1_profit_sol": 0.0, "v2_profit_sol": 0.0, "v3_profit_sol": 0.0, "v4_profit_sol": 0.0, "v5_profit_sol": 0.0, "v5_closed": 0, "v5_wins": 0}
 
         open_trades   = conn.execute("SELECT COUNT(*) FROM paper_trades WHERE status = 'OPEN'").fetchone()[0]
         closed_trades = conn.execute("SELECT COUNT(*) FROM paper_trades WHERE status = 'CLOSED'").fetchone()[0]
@@ -175,6 +175,8 @@ def get_paper_stats():
             v3_profit = conn.execute("SELECT SUM(profit_sol) FROM paper_trades WHERE strategy = 'V3'").fetchone()[0] or 0.0
             v4_profit = conn.execute("SELECT SUM(profit_sol) FROM paper_trades WHERE strategy = 'V4'").fetchone()[0] or 0.0
             v5_profit = conn.execute("SELECT SUM(profit_sol) FROM paper_trades WHERE strategy = 'V5'").fetchone()[0] or 0.0
+            v5_closed = conn.execute("SELECT COUNT(*) FROM paper_trades WHERE strategy = 'V5' AND status = 'CLOSED'").fetchone()[0] or 0
+            v5_wins   = conn.execute("SELECT COUNT(*) FROM paper_trades WHERE strategy = 'V5' AND status = 'CLOSED' AND profit_sol > 0").fetchone()[0] or 0
             profit = conn.execute("SELECT SUM(profit_sol) FROM paper_trades").fetchone()[0] or 0.0
         except sqlite3.OperationalError:
             v1_profit = 0.0
@@ -182,6 +184,8 @@ def get_paper_stats():
             v3_profit = 0.0
             v4_profit = 0.0
             v5_profit = 0.0
+            v5_closed = 0
+            v5_wins = 0
             profit = 0.0
 
         return {
@@ -193,7 +197,9 @@ def get_paper_stats():
             "v2_profit_sol": round(v2_profit, 4),
             "v3_profit_sol": round(v3_profit, 4),
             "v4_profit_sol": round(v4_profit, 4),
-            "v5_profit_sol": round(v5_profit, 4)
+            "v5_profit_sol": round(v5_profit, 4),
+            "v5_closed": v5_closed,
+            "v5_wins": v5_wins
         }
     finally:
         conn.close()

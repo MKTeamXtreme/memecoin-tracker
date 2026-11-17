@@ -356,6 +356,20 @@ function renderStats(s) {
       elV5.style.color = v5Profit >= 0 ? 'var(--success)' : 'var(--danger)';
     }
 
+    const elV5Wr = document.getElementById('s-paper-v5-wr');
+    if (elV5Wr) {
+      const v5Closed = s.paper.v5_closed || 0;
+      const v5Wins = s.paper.v5_wins || 0;
+      if (v5Closed > 0) {
+        const wr = Math.round((v5Wins / v5Closed) * 100);
+        elV5Wr.textContent = `V5 Win Rate: ${wr}% (${v5Wins}/${v5Closed})`;
+        elV5Wr.style.color = wr >= 50 ? 'var(--success)' : 'var(--amber)';
+      } else {
+        elV5Wr.textContent = 'V5 Win Rate: — (0 closed)';
+        elV5Wr.style.color = 'var(--text-muted)';
+      }
+    }
+
     const elV4 = document.getElementById('s-paper-pnl-v4');
     if (elV4) {
       elV4.textContent = `V4: ${v4Profit > 0 ? '+' : ''}${v4Profit.toFixed(2)} SOL`;
