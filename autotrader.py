@@ -39,7 +39,7 @@ KOTH_TRAP_HIGH   = 33_800        # Upper bound of KOTH dump wall
 STOP_LOSS_AT     = 0.58          # Structural stop loss at 0.58x (avoids 0.60x-0.75x first-pullback shakeouts on 10x-48x runners)
 TRAILING_STOP_PCT= 0.28          # Trailing stop loss for 15% moonbag (28% drop from peak = 0.72x peak)
 MOONBAG_EXIT_HRS = 24            # Sell moonbag after this many hours
-MIN_1MIN_MULT    = 1.22          # Min 45s staircase mult from discovery (+22%)
+MIN_1MIN_MULT    = 1.16          # Min 45s staircase mult from discovery (+16%)
 MAX_1MIN_MULT    = 1.54          # Max 45s staircase mult from discovery (+54% cap: filters vertical blow-off tops)
 MAX_OPEN_TRADES  = 4             # Max concurrent active (un-banked) trades for 0.2 SOL bankroll safety
 POLL_SECS        = 3             # How often to check open trade prices (seconds)
@@ -292,6 +292,23 @@ async def check_rug_risk(mint: str, expected_mc: float = 0.0) -> tuple[bool, str
         log.error(f"Rug check failed: {e}")
         return False, "Check failed"
 
+def _prune_closed_open_trades():
+    """Remove any in-memory open_trades that are already CLOSED in SQLite so MAX_OPEN_TRADES can never deadlock."""
+    if not open_trades:
+        return
+    try:
+        from database import get_connection
+        conn = get_connection()
+        rows = conn.execute("SELECT mint FROM paper_trades WHERE status = 'OPEN' AND strategy IN ('V4', 'V5')").fetchall()
+        conn.close()
+        db_open = {r[0] for r in rows}
+        for m in list(open_trades.keys()):
+            if m not in db_open:
+                closed_trades.append(open_trades.pop(m))
+    except Exception as e:
+        log.error(f"Could not sync open_trades with DB: {e}")
+
+
 async def buy_coin(
     session: aiohttp.ClientSession,
     mint: str,
@@ -301,6 +318,7 @@ async def buy_coin(
     private_key_b58: str = "",
     is_news_match: bool = False
 ):
+    _prune_closed_open_trades()
     if mint in open_trades:
         return  # already in this trade
 
@@ -411,86 +429,91 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
     connector = aiohttp.TCPConnector(ssl=False)
     async with aiohttp.ClientSession(connector=connector) as session:
         while True:
-            to_close = []
+            try:
+                to_close = []
 
-            for mint, trade in list(open_trades.items()):
-                if trade.closed:
-                    to_close.append(mint)
-                    continue
+                for mint, trade in list(open_trades.items()):
+                    if trade.closed:
+                        to_close.append(mint)
+                        continue
 
-                current_mc = await fetch_current_mc(session, mint)
-                if current_mc is None:
-                    continue
+                    current_mc = await fetch_current_mc(session, mint)
+                    if current_mc is None:
+                        continue
 
-                mult = current_mc / trade.entry_mc if trade.entry_mc > 0 else 0
-                trade.peak_mult = max(trade.peak_mult, mult)
-                elapsed_secs = time.time() - trade.entry_time
+                    mult = current_mc / trade.entry_mc if trade.entry_mc > 0 else 0
+                    trade.peak_mult = max(trade.peak_mult, mult)
+                    elapsed_secs = time.time() - trade.entry_time
 
-                # Sync paper trading database in real time with actual current_mc
-                update_paper_trade(mint, current_mc, elapsed_secs=elapsed_secs)
+                    # Sync paper trading database in real time with actual current_mc (monitor is source of truth for V4/V5)
+                    update_paper_trade(mint, current_mc, elapsed_secs=elapsed_secs, from_monitor=True)
 
-                # ── INITIAL STOP LOSS (0.58x) OR 180s STAGNATION TIME-STOP ──
-                is_failed_breakout = (not trade.half_sold and elapsed_secs >= 180 and mult <= 0.95 and trade.peak_mult < 1.18)
-                if (mult <= STOP_LOSS_AT or is_failed_breakout) and not trade.half_sold:
-                    sol_back = trade.sol_invested * mult
-                    trade.sol_returned += sol_back
-                    trade.closed = True
-                    reason_str = "180s stagnation time-stop" if is_failed_breakout else "stop loss"
-                    trade.close_reason = f"{reason_str} at {mult:.2f}x"
-                    log.info(f"STOP ({reason_str.upper()}) | {trade.name} | {mult:.2f}x | PnL: {trade.pnl:+.4f} SOL")
-                    await sell_coin(session, trade, 1.0, reason_str, wallet_pubkey, private_key_b58)
-                    to_close.append(mint)
+                    # ── INITIAL STOP LOSS (0.58x) OR 180s STAGNATION TIME-STOP ──
+                    is_failed_breakout = (not trade.half_sold and elapsed_secs >= 180 and mult <= 0.95 and trade.peak_mult < 1.18)
+                    if (mult <= STOP_LOSS_AT or is_failed_breakout) and not trade.half_sold:
+                        sol_back = trade.sol_invested * mult
+                        trade.sol_returned += sol_back
+                        trade.closed = True
+                        reason_str = "180s stagnation time-stop" if is_failed_breakout else "stop loss"
+                        trade.close_reason = f"{reason_str} at {mult:.2f}x"
+                        log.info(f"STOP ({reason_str.upper()}) | {trade.name} | {mult:.2f}x | PnL: {trade.pnl:+.4f} SOL")
+                        await sell_coin(session, trade, 1.0, reason_str, wallet_pubkey, private_key_b58)
+                        to_close.append(mint)
 
-                # ── TIER 1: SELL 62% AT 1.35x (BANKS 83.7% PRINCIPAL & RAISES STOP TO 0.95x) ──
-                elif not trade.half_sold and mult >= TIER1_SELL_AT:
-                    sol_back = (trade.sol_invested * 0.62) * TIER1_SELL_AT
-                    trade.sol_returned += sol_back
-                    trade.half_sold = True
-                    log.info(f"TIER 1 SELL (62%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL")
-                    await sell_coin(session, trade, 0.62, "Tier 1 (62% at 1.35x)", wallet_pubkey, private_key_b58)
+                    # ── TIER 1: SELL 62% AT 1.35x (BANKS 83.7% PRINCIPAL & RAISES STOP TO 0.95x) ──
+                    elif not trade.half_sold and mult >= TIER1_SELL_AT:
+                        sol_back = (trade.sol_invested * 0.62) * TIER1_SELL_AT
+                        trade.sol_returned += sol_back
+                        trade.half_sold = True
+                        log.info(f"TIER 1 SELL (62%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL")
+                        await sell_coin(session, trade, 0.62, "Tier 1 (62% at 1.35x)", wallet_pubkey, private_key_b58)
 
-                # ── TIER 2: SELL 23% AT 1.55x PRE-GRADUATION WALL (LOCKS +19.4% CASH + 15% MOONBAG!) ──
-                elif trade.half_sold and not trade.tier2_sold and mult >= TIER2_SELL_AT:
-                    sol_back = (trade.sol_invested * 0.23) * TIER2_SELL_AT
-                    trade.sol_returned += sol_back
-                    trade.tier2_sold = True
-                    log.info(f"TIER 2 SELL (23%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (Total Returned: {trade.sol_returned:.4f} SOL)")
-                    await sell_coin(session, trade, 0.23, "Tier 2 (23% at 1.55x pre-grad wall)", wallet_pubkey, private_key_b58)
+                    # ── TIER 2: SELL 23% AT 1.55x PRE-GRADUATION WALL (LOCKS +19.4% CASH + 15% MOONBAG!) ──
+                    elif trade.half_sold and not trade.tier2_sold and mult >= TIER2_SELL_AT:
+                        sol_back = (trade.sol_invested * 0.23) * TIER2_SELL_AT
+                        trade.sol_returned += sol_back
+                        trade.tier2_sold = True
+                        log.info(f"TIER 2 SELL (23%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (Total Returned: {trade.sol_returned:.4f} SOL)")
+                        await sell_coin(session, trade, 0.23, "Tier 2 (23% at 1.55x pre-grad wall)", wallet_pubkey, private_key_b58)
 
-                # ── TRAILING STOP LOSS (15% MOONBAG / 38% POST-T1) ───────────────────────
-                elif trade.half_sold and mult <= max(0.95, trade.peak_mult * (1.0 - TRAILING_STOP_PCT)):
-                    rem_fraction = 0.15 if trade.tier2_sold else 0.38
-                    sol_back = (trade.sol_invested * rem_fraction) * mult
-                    trade.sol_returned += sol_back
-                    trade.closed = True
-                    trade.close_reason = f"Trailing stop at {mult:.2f}x (Peak: {trade.peak_mult:.2f}x)"
-                    log.info(f"TRAILING STOP ({rem_fraction*100:.1f}%) | {trade.name} | {mult:.2f}x | Final PnL: {trade.pnl:+.4f} SOL")
-                    await sell_coin(session, trade, rem_fraction, "trailing stop exit", wallet_pubkey, private_key_b58)
-                    to_close.append(mint)
+                    # ── TRAILING STOP LOSS (15% MOONBAG / 38% POST-T1) ───────────────────────
+                    elif trade.half_sold and mult <= max(0.95, trade.peak_mult * (1.0 - TRAILING_STOP_PCT)):
+                        rem_fraction = 0.15 if trade.tier2_sold else 0.38
+                        sol_back = (trade.sol_invested * rem_fraction) * mult
+                        trade.sol_returned += sol_back
+                        trade.closed = True
+                        trade.close_reason = f"Trailing stop at {mult:.2f}x (Peak: {trade.peak_mult:.2f}x)"
+                        log.info(f"TRAILING STOP ({rem_fraction*100:.1f}%) | {trade.name} | {mult:.2f}x | Final PnL: {trade.pnl:+.4f} SOL")
+                        await sell_coin(session, trade, rem_fraction, "trailing stop exit", wallet_pubkey, private_key_b58)
+                        to_close.append(mint)
 
-                # ── 24HR MOONBAG EXIT ─────────────────────────────────────
-                elif trade.elapsed_hrs >= MOONBAG_EXIT_HRS:
-                    rem_fraction = 0.15 if trade.tier2_sold else (0.38 if trade.half_sold else 1.0)
-                    sol_back = (trade.sol_invested * rem_fraction) * mult
-                    trade.sol_returned += sol_back
-                    trade.closed = True
-                    trade.close_reason = f"24hr exit at {mult:.2f}x"
-                    log.info(f"24HR EXIT | {trade.name} | {mult:.2f}x | Final PnL: {trade.pnl:+.4f} SOL")
-                    await sell_coin(session, trade, rem_fraction, "24hr moonbag", wallet_pubkey, private_key_b58)
-                    to_close.append(mint)
+                    # ── 24HR MOONBAG EXIT ─────────────────────────────────────
+                    elif trade.elapsed_hrs >= MOONBAG_EXIT_HRS:
+                        rem_fraction = 0.15 if trade.tier2_sold else (0.38 if trade.half_sold else 1.0)
+                        sol_back = (trade.sol_invested * rem_fraction) * mult
+                        trade.sol_returned += sol_back
+                        trade.closed = True
+                        trade.close_reason = f"24hr exit at {mult:.2f}x"
+                        log.info(f"24HR EXIT | {trade.name} | {mult:.2f}x | Final PnL: {trade.pnl:+.4f} SOL")
+                        await sell_coin(session, trade, rem_fraction, "24hr moonbag", wallet_pubkey, private_key_b58)
+                        to_close.append(mint)
 
-                else:
-                    log.info(f"WATCHING  | {trade.name} | {mult:.2f}x | {trade.elapsed_hrs:.1f}hr elapsed")
+                    else:
+                        log.info(f"WATCHING  | {trade.name} | {mult:.2f}x | {trade.elapsed_hrs:.1f}hr elapsed")
 
-            # Move closed trades out
-            for mint in to_close:
-                if mint in open_trades:
-                    closed_trades.append(open_trades.pop(mint))
+                # Move closed trades out
+                for mint in to_close:
+                    if mint in open_trades:
+                        closed_trades.append(open_trades.pop(mint))
 
-            # Print running PnL summary
-            if closed_trades:
-                total_pnl = sum(t.pnl for t in closed_trades)
-                log.info(f"=== PnL Summary: {len(closed_trades)} closed | {total_pnl:+.4f} SOL total ===")
+                # Print running PnL summary
+                if closed_trades:
+                    total_pnl = sum(t.pnl for t in closed_trades)
+                    log.info(f"=== PnL Summary: {len(closed_trades)} closed | {total_pnl:+.4f} SOL total ===")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.error(f"monitor_loop recovered from error: {e}")
 
             await asyncio.sleep(POLL_SECS)
 
@@ -544,17 +567,6 @@ async def on_new_coin(
             if mc_45s is None or mc_45s <= mc_20s * 1.02:
                 log.info(f"SKIP (stalled/rolled over between 20s ${mc_20s/1000:.1f}k and 45s ${mc_45s/1000 if mc_45s else 0:.1f}k) | {name}")
                 return
-
-            # Stage 3: KOTH Dump-Wall Filter ($30.8k - $33.8k)
-            # If sitting inside the exact $30.8k-$33.8k King-of-the-Hill dump zone at 45s, wait 10s to require a clean breakout > $33.8k
-            if KOTH_TRAP_LOW < mc_45s < KOTH_TRAP_HIGH:
-                log.info(f"KOTH WALL CHECK ($30.8k-$33.8k) | {name} at ${mc_45s/1000:.1f}k — waiting 10s for breakout > ${KOTH_TRAP_HIGH/1000:.1f}k")
-                await asyncio.sleep(10)
-                mc_55s = await fetch_current_mc(session, mint)
-                if mc_55s is None or mc_55s < KOTH_TRAP_HIGH or mc_55s <= mc_45s:
-                    log.info(f"SKIP (rejected at KOTH wall: ${mc_55s/1000 if mc_55s else 0:.1f}k) | {name}")
-                    return
-                mc_45s = mc_55s
 
             mc_1min = mc_45s
 

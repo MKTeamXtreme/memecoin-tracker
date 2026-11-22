@@ -85,7 +85,7 @@ search_idx: int            = 0
 async def broadcast(payload: dict):
     dead = set()
     msg  = json.dumps(payload)
-    for ws in ws_clients:
+    for ws in list(ws_clients):
         try:
             await ws.send_text(msg)
         except Exception:
@@ -373,18 +373,18 @@ async def poll_loop():
                 keyword_found = await poll_search(session, url)
                 # Merge results (dedup handled by seen_mints)
                 found.extend(keyword_found)
+
+                for coin in found:
+                    await broadcast({"type": "new_coin", "coin": coin})
+
+                if found:
+                    print(f"[Poll] #{poll_count} -- {len(found)} saved | {len(seen_mints)} seen total")
+                elif poll_count % 5 == 0:
+                    print(f"[Poll] #{poll_count} -- scanning... | {len(seen_mints)} seen, {len(seen_mints) - len(found)} rejected by score")
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 print(f"[Poll] Unexpected error: {e}")
-
-            for coin in found:
-                await broadcast({"type": "new_coin", "coin": coin})
-
-            if found:
-                print(f"[Poll] #{poll_count} -- {len(found)} saved | {len(seen_mints)} seen total")
-            elif poll_count % 5 == 0:
-                print(f"[Poll] #{poll_count} -- scanning... | {len(seen_mints)} seen, {len(seen_mints) - len(found)} rejected by score")
 
             poll_count += 1
             await asyncio.sleep(POLL_INTERVAL)

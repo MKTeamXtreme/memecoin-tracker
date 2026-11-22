@@ -77,8 +77,8 @@ def open_paper_trade(mint: str, entry_mc: float, amount_sol: float = PAPER_INVES
     finally:
         conn.close()
 
-def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float):
-    """Call on every tracking tick. Closes the trade automatically at 1hr."""
+def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float, from_monitor: bool = False):
+    """Call on every tracking tick. V4/V5 trades are exclusively managed by autotrader's 3s on-chain monitor_loop."""
     if current_mc is None or current_mc <= 0: return
     conn = get_connection()
     try:
@@ -87,6 +87,9 @@ def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float):
             return
 
         trade   = dict(trade)
+        # Prevent tracker.py's 60s DexScreener poll from colliding with or prematurely closing live V4/V5 trades
+        if not from_monitor and trade.get("strategy") in ("V4", "V5"):
+            return
         updates = {}
 
         # Tier 1: Sell 62% at 1.35x (banks 83.7% principal & raises stop floor to 0.95x)
