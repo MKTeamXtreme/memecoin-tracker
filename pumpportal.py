@@ -15,6 +15,7 @@ How it works:
 import asyncio
 import base64
 import json
+import re
 import struct
 import time
 from dataclasses import dataclass
@@ -22,35 +23,172 @@ from typing import Callable, Awaitable, Dict, List, Optional, Set, Tuple
 
 import aiohttp
 from solders.pubkey import Pubkey
+from news import STOPWORDS, match_breaking_catalyst
 
 PUMPPORTAL_WS_URL = "wss://pumpportal.fun/api/data"
 PUMPFUN_PROGRAM   = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
 WSOL_MINT         = "So11111111111111111111111111111111111111112"
 
 # Incubator bounds
-MIN_INCUBATE_SECS = 110     # 110s incubation + 45s staircase = ~155s-165s buy age (0/10 rugs in Nov 10-13 out-of-sample)
-MAX_INCUBATE_SECS = 900     # Evict tokens that haven't reached $18.5k within 15 minutes
-DEAD_FLOOR_SECS   = 160     # After 160s, evict dead tokens still sitting < $4.5k floor
-DEAD_FLOOR_USD    = 4_500.0
-TARGET_MIN_MC_USD = 18_500.0
-TARGET_MAX_MC_USD = 26_000.0
-MAX_INIT_DEV_BUY  = 80_000_000.0  # Instant t=0 discard if creator sniped >8% in creation tx
-MAX_WATCHLIST     = 800
-SCAN_INTERVAL_SECS= 6       # 1 batch RPC call every 6s keeps Helius usage well within free tier
+MIN_INCUBATE_SECS     = 110     # Normal tokens: 110s incubation + 45s staircase
+FAST_TRACK_AGE_SECS   = 35      # Breaking news / viral meta leaders: fast-track at 35s (skips 110s delay!)
+FAST_TRACK_MIN_MC_USD = 15_000.0
+MAX_INCUBATE_SECS     = 900     # Evict tokens that haven't reached target MC within 15 minutes
+DEAD_FLOOR_SECS       = 160     # After 160s, evict dead tokens still sitting < $4.5k floor
+DEAD_FLOOR_USD        = 4_500.0
+TARGET_MIN_MC_USD     = 18_500.0
+TARGET_MAX_MC_USD     = 26_000.0
+MAX_INIT_DEV_BUY      = 80_000_000.0  # Instant t=0 discard if creator sniped >8% in creation tx
+MAX_WATCHLIST         = 800
+SCAN_INTERVAL_SECS    = 6       # 1 batch RPC call every 6s keeps Helius usage well within free tier
+
+# Meta-Cluster Radar & Copycat Blocker config
+CLUSTER_WINDOW_SECS   = 600     # 10-minute rolling surge window
+HISTORIC_WINDOW_SECS  = 14400   # 4-hour background window to ensure term is genuinely novel
+CLUSTER_MIN_LAUNCHES  = 4       # >=4 fresh launches in 10m = live viral Pump.fun meta
+CLUSTER_MAX_PRIOR     = 2       # <=2 mentions in prior 3h50m = brand-new catalyst (not recycled spam)
+META_TTL_SECS         = 15 * 60 # Live meta stays active for 15 minutes
+COPYCAT_TTL_SECS      = 60 * 60 # Block duplicate copycat names/catalysts for 60 minutes
+
+PUMP_NOISE_WORDS: Set[str] = STOPWORDS | {
+    "FUCK", "SHIT", "DICK", "COCK", "BOOB", "ASS", "SEXY", "PORN", "GAY", "CHAD", "BASED",
+    "FART", "POOP", "TURD", "WIFE", "HUSBAND", "MAMA", "PAPA", "DADDY", "MOMMY", "GOAT",
+    "LION", "BEAR", "WOLF", "DUCK", "BIRD", "FISH", "SHARK", "WHALE", "MONKEY", "APES",
+    "TIGER", "PANDA", "BUNNY", "MOUSE", "HORSE", "SNAKE", "DRAGON", "DEVIL", "ANGEL",
+    "GHOST", "ALIEN", "ROBOT", "CYBER", "QUANTUM", "MAGIC", "SUPER", "HYPER", "ULTRA",
+    "MEGA", "GIGA", "MICRO", "NANO", "ALPHA", "OMEGA", "SIGMA", "BETA", "DELTA", "GAMMA",
+    "RICH", "POOR", "MILLIONAIRE", "BILLIONAIRE", "LAMBO", "TESLA", "SPACE", "MARS",
+    "SANTA", "XMAS", "CHRISTMAS", "HALLOWEEN", "EASTER", "SUMMER", "WINTER", "SPRING",
+    "AUTUMN", "TRENCH", "TRENCHES", "DEGEN", "DEGENS", "JEET", "JEETS", "HODL", "FOMO",
+    "WAGMI", "NGMI", "GM", "GN", "COPE", "SEETHE", "CHILL", "VIBE", "VIBES", "CULT",
+    "ARMY", "GANG", "CLUB", "SQUAD", "NATION", "EMPIRE", "KINGDOM", "REPUBLIC", "INU",
+}
 
 # Cached SOL/USD price
 _sol_price_usd: float = 0.0
 _sol_price_ts:  float = 0.0
 
+# Meta-cluster & copycat tracking state
+_term_launch_ts: Dict[str, List[float]] = {}
+_active_metas: Dict[str, dict] = {}
+_surfaced_leaders: Dict[str, Tuple[str, float]] = {}  # key -> (mint, ts)
+
 
 @dataclass
 class IncubatedToken:
-    mint:       str
-    name:       str
-    symbol:     str
-    curve_key:  str
-    created_at: float
-    uri:        str = ""
+    mint:             str
+    name:             str
+    symbol:           str
+    curve_key:        str
+    created_at:       float
+    uri:              str  = ""
+    is_breaking_hype: bool = False
+    hype_reason:      str  = ""
+    catalyst_term:    str  = ""
+
+
+def _extract_launch_terms(name: str, symbol: str) -> List[str]:
+    """Extract clean distinctive keywords from a newly launched Pump.fun token."""
+    raw = f"{name or ''} {symbol or ''}"
+    words = re.findall(r"[A-Za-z]{4,15}", raw)
+    out = []
+    seen = set()
+    for w in words:
+        u = w.upper()
+        if u not in PUMP_NOISE_WORDS and u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
+def _record_launch_for_meta(name: str, symbol: str, now: float):
+    """Update rolling Meta-Cluster Radar on every new Pump.fun token creation."""
+    terms = _extract_launch_terms(name, symbol)
+    if not terms:
+        return
+    # Prune expired active metas
+    for k in list(_active_metas.keys()):
+        if now - _active_metas[k]["ts"] > META_TTL_SECS:
+            _active_metas.pop(k, None)
+
+    for u in terms:
+        hist = _term_launch_ts.setdefault(u, [])
+        # Keep only last 4 hours
+        cutoff = now - HISTORIC_WINDOW_SECS
+        if hist and hist[0] < cutoff:
+            hist[:] = [t for t in hist if t >= cutoff]
+        hist.append(now)
+
+        recent_cutoff = now - CLUSTER_WINDOW_SECS
+        recent_cnt = sum(1 for t in hist if t >= recent_cutoff)
+        prior_cnt  = len(hist) - recent_cnt
+
+        if recent_cnt >= CLUSTER_MIN_LAUNCHES and prior_cnt <= CLUSTER_MAX_PRIOR:
+            is_new = u not in _active_metas
+            _active_metas[u] = {"term": u, "count": recent_cnt, "ts": now}
+            if is_new:
+                print(f"[MetaCluster] LIVE VIRAL META DETECTED: {u} ({recent_cnt} launches in 10m, {prior_cnt} prior)")
+
+    # Bound dictionary size
+    if len(_term_launch_ts) > 5000:
+        cutoff = now - CLUSTER_WINDOW_SECS
+        for k in list(_term_launch_ts.keys()):
+            if not _term_launch_ts[k] or _term_launch_ts[k][-1] < cutoff:
+                _term_launch_ts.pop(k, None)
+
+
+def match_meta_cluster(symbol: str, name: str) -> Optional[dict]:
+    """Return active live Pump.fun Meta-Cluster info if token matches a surging viral meta."""
+    now = time.time()
+    for k in list(_active_metas.keys()):
+        if now - _active_metas[k]["ts"] > META_TTL_SECS:
+            _active_metas.pop(k, None)
+    if not _active_metas:
+        return None
+    for term in _extract_launch_terms(name, symbol):
+        if term in _active_metas:
+            return _active_metas[term]
+    return None
+
+
+def _norm_key(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def is_duplicate_copycat(name: str, symbol: str, mint: str, catalyst_term: str = "") -> Tuple[bool, str]:
+    """
+    Block copycat tokens #2-#30 that share the exact same name/symbol or breaking catalyst
+    as a leader token that already entered our discovery zone within the last 60 minutes.
+    """
+    now = time.time()
+    for k in list(_surfaced_leaders.keys()):
+        if now - _surfaced_leaders[k][1] > COPYCAT_TTL_SECS:
+            _surfaced_leaders.pop(k, None)
+
+    n_key = _norm_key(name)
+    s_key = _norm_key(symbol)
+    c_key = f"cat:{catalyst_term.upper()}" if catalyst_term else ""
+
+    if c_key and c_key in _surfaced_leaders and _surfaced_leaders[c_key][0] != mint:
+        return True, f"Copycat of active catalyst '{catalyst_term}' (leader already surfaced)"
+    if len(n_key) >= 4 and f"name:{n_key}" in _surfaced_leaders and _surfaced_leaders[f"name:{n_key}"][0] != mint:
+        return True, f"Duplicate copycat name '{name}' (already seen <60m)"
+    if len(s_key) >= 4 and f"sym:{s_key}" in _surfaced_leaders and _surfaced_leaders[f"sym:{s_key}"][0] != mint:
+        return True, f"Duplicate copycat symbol '${symbol}' (already seen <60m)"
+    return False, ""
+
+
+def register_surfaced_leader(name: str, symbol: str, mint: str, catalyst_term: str = ""):
+    """Register the #1 leader coin for a name/symbol/catalyst so subsequent copycats are blocked."""
+    now = time.time()
+    n_key = _norm_key(name)
+    s_key = _norm_key(symbol)
+    if len(n_key) >= 4:
+        _surfaced_leaders.setdefault(f"name:{n_key}", (mint, now))
+    if len(s_key) >= 4:
+        _surfaced_leaders.setdefault(f"sym:{s_key}", (mint, now))
+    if catalyst_term:
+        _surfaced_leaders.setdefault(f"cat:{catalyst_term.upper()}", (mint, now))
 
 
 watchlist: Dict[str, IncubatedToken] = {}
@@ -257,6 +395,13 @@ async def _ws_listener(seen_mints: Set[str]):
                         if not mint or mint in seen_mints or mint in watchlist:
                             continue
 
+                        tok_name = (payload.get("name") or "Unknown").strip() or "Unknown"
+                        tok_sym  = (payload.get("symbol") or "???").strip() or "???"
+                        now_ts   = time.time()
+
+                        # Feed 100% of Pump.fun launches into the rolling Meta-Cluster Radar
+                        _record_launch_for_meta(tok_name, tok_sym, now_ts)
+
                         init_buy = float(payload.get("initialBuy") or 0.0)
                         if init_buy > MAX_INIT_DEV_BUY:
                             continue
@@ -272,10 +417,10 @@ async def _ws_listener(seen_mints: Set[str]):
 
                         watchlist[mint] = IncubatedToken(
                             mint=mint,
-                            name=(payload.get("name") or "Unknown").strip() or "Unknown",
-                            symbol=(payload.get("symbol") or "???").strip() or "???",
+                            name=tok_name,
+                            symbol=tok_sym,
                             curve_key=curve_key,
-                            created_at=time.time(),
+                            created_at=now_ts,
                             uri=payload.get("uri") or "",
                         )
             except asyncio.CancelledError:
@@ -308,7 +453,24 @@ async def _incubator_scanner(
                     age = now - tok.created_at
                     if age > MAX_INCUBATE_SECS:
                         to_evict.append(mint)
-                    elif age >= MIN_INCUBATE_SECS:
+                        continue
+
+                    # Check live Breaking News (<1s TreeNews WS) or live Viral Meta-Cluster
+                    if not tok.is_breaking_hype:
+                        b_cat = match_breaking_catalyst(tok.symbol, tok.name)
+                        if b_cat:
+                            tok.is_breaking_hype = True
+                            tok.catalyst_term    = b_cat["term"]
+                            tok.hype_reason      = f"BREAKING ({b_cat['term']}): {b_cat['headline'][:70]}"
+                        else:
+                            m_cat = match_meta_cluster(tok.symbol, tok.name)
+                            if m_cat:
+                                tok.is_breaking_hype = True
+                                tok.catalyst_term    = m_cat["term"]
+                                tok.hype_reason      = f"VIRAL META ({m_cat['term']}: {m_cat['count']} launches in 10m)"
+
+                    min_age = FAST_TRACK_AGE_SECS if tok.is_breaking_hype else MIN_INCUBATE_SECS
+                    if age >= min_age:
                         due_tokens.append(tok)
 
                 for m in to_evict:
@@ -324,7 +486,7 @@ async def _incubator_scanner(
                         mc_usd, is_complete = curve_map.get(tok.mint, (None, False))
                         age = now - tok.created_at
 
-                        # Evict graduated or over-pumped tokens that already left the $18.5k-$26k entry zone
+                        # Evict graduated or over-pumped tokens that already left the entry zone
                         if is_complete or (mc_usd is not None and mc_usd > 42_000):
                             watchlist.pop(tok.mint, None)
                             continue
@@ -334,8 +496,9 @@ async def _incubator_scanner(
                             watchlist.pop(tok.mint, None)
                             continue
 
+                        min_mc = FAST_TRACK_MIN_MC_USD if tok.is_breaking_hype else TARGET_MIN_MC_USD
                         # Golden Zone live on-chain breakout!
-                        if mc_usd is not None and TARGET_MIN_MC_USD <= mc_usd <= TARGET_MAX_MC_USD:
+                        if mc_usd is not None and min_mc <= mc_usd <= TARGET_MAX_MC_USD:
                             watchlist.pop(tok.mint, None)
                             asyncio.create_task(on_candidate(tok, mc_usd))
 
@@ -343,7 +506,7 @@ async def _incubator_scanner(
                 if scan_count % 20 == 0:
                     print(
                         f"[PumpPortal] Incubating {len(watchlist)} live tokens "
-                        f"({len(due_tokens)} aged >=110s checked | SOL=${_sol_price_usd:.2f})"
+                        f"({len(due_tokens)} checked | {len(_active_metas)} live metas | SOL=${_sol_price_usd:.2f})"
                     )
             except asyncio.CancelledError:
                 raise

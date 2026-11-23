@@ -339,8 +339,8 @@ async def buy_coin(
         return
 
 
-    invest_amt = TRADE_AMOUNT_SOL * 2 if is_news_match else TRADE_AMOUNT_SOL
-    news_tag = " [NEWS/HYPE]" if is_news_match else ""
+    invest_amt = TRADE_AMOUNT_SOL
+    news_tag = " [BREAKING/META]" if is_news_match else ""
     log.info(f"BUY | {name} | MC ${entry_mc/1000:.1f}k | {invest_amt} SOL{news_tag} {'[PAPER]' if PAPER_MODE else '[LIVE]'}")
 
     tx = await execute_swap(
@@ -527,70 +527,83 @@ async def on_new_coin(
     mc_1min: Optional[float] = None,
     wallet_pubkey: str = "",
     private_key_b58: str = "",
-    pair_created_at: Optional[float] = None
+    pair_created_at: Optional[float] = None,
+    is_breaking_hype: bool = False,
+    hype_reason: str = "",
 ):
     """
-    Fast two-stage breakout entry:
-      1. Wait 15s to filter instant launch rugs.
-      2. Poll every 5s (from 15s to 45s) for 2 consecutive rising checks >= 1.12x
-         inside the $23k-$28.5k buy window so we enter only confirmed organic breakouts.
+    Two-mode breakout confirmation:
+      - Normal V5 coins: >=110s age, $18.5k-$25.5k discovery, 0s->20s->45s staircase, $24.5k-$30.8k buy window.
+      - Breaking News / Live Meta-Cluster Leaders (is_breaking_hype=True):
+        >=35s age, $15.0k-$25.5k discovery, fast 0s->12s->25s staircase, $18.0k-$32.0k buy window.
     """
     own_session = session is None
     if own_session:
         connector = aiohttp.TCPConnector(ssl=False)
         session = aiohttp.ClientSession(connector=connector)
 
+    min_age    = 35 if is_breaking_hype else MIN_COIN_AGE_SECS
+    min_disc   = 15_000 if is_breaking_hype else MIN_DISCOVERY_MC
+    max_disc   = MAX_ENTRY_MC
+    s1_secs    = 12 if is_breaking_hype else 20
+    s2_secs    = 13 if is_breaking_hype else 25
+    s1_mult    = 1.08 if is_breaking_hype else 1.10
+    min_mult   = 1.12 if is_breaking_hype else MIN_1MIN_MULT
+    max_mult   = 1.75 if is_breaking_hype else MAX_1MIN_MULT
+    min_buy_mc = 18_000 if is_breaking_hype else MIN_1MIN_MC
+    max_buy_mc = 32_000 if is_breaking_hype else MAX_1MIN_MC
+
     try:
         if pair_created_at is not None:
             coin_age = time.time() - pair_created_at
-            if 0 <= coin_age < MIN_COIN_AGE_SECS:
-                log.info(f"SKIP (Coin age {coin_age:.0f}s < {MIN_COIN_AGE_SECS}s launch-dump filter) | {name}")
+            if 0 <= coin_age < min_age:
+                log.info(f"SKIP (Coin age {coin_age:.0f}s < {min_age}s launch-dump filter) | {name}")
                 return
 
-        if entry_mc < MIN_DISCOVERY_MC or entry_mc > MAX_ENTRY_MC:
-            log.info(f"SKIP (Discovery MC ${entry_mc/1000:.1f}k outside ${MIN_DISCOVERY_MC/1000:.0f}k-${MAX_ENTRY_MC/1000:.0f}k zone) | {name}")
+        if entry_mc < min_disc or entry_mc > max_disc:
+            log.info(f"SKIP (Discovery MC ${entry_mc/1000:.1f}k outside ${min_disc/1000:.0f}k-${max_disc/1000:.0f}k zone) | {name}")
             return
 
         if mc_1min is None:
-            log.info(f"WATCHING 3-STAGE STAIRCASE (0s->20s->45s) | {name} | Discovery MC ${entry_mc/1000:.1f}k")
-            # Stage 1: Wait 20s and require +10% gain from discovery (filters instant launch dumps)
-            await asyncio.sleep(20)
-            mc_20s = await fetch_current_mc(session, mint)
-            if mc_20s is None or mc_20s < entry_mc * 1.10:
-                log.info(f"SKIP (20s MC ${mc_20s/1000 if mc_20s else 0:.1f}k < 1.10x discovery) | {name}")
+            mode_lbl = f"FAST-TRACK HYPE (0s->{s1_secs}s->{s1_secs+s2_secs}s | {hype_reason})" if is_breaking_hype else "3-STAGE STAIRCASE (0s->20s->45s)"
+            log.info(f"WATCHING {mode_lbl} | {name} | Discovery MC ${entry_mc/1000:.1f}k")
+            # Stage 1: Wait s1_secs and require gain from discovery (filters instant launch dumps)
+            await asyncio.sleep(s1_secs)
+            mc_s1 = await fetch_current_mc(session, mint)
+            if mc_s1 is None or mc_s1 < entry_mc * s1_mult:
+                log.info(f"SKIP ({s1_secs}s MC ${mc_s1/1000 if mc_s1 else 0:.1f}k < {s1_mult:.2f}x discovery) | {name}")
                 return
 
-            # Stage 2: Wait another 25s (to 45s) so DexScreener cache refreshes & 20s dev-bundle spikes roll over!
-            # Across 48 V4 trades, coins where 45s-60s MC <= 20s MC went 5/30 (-0.25 SOL), while >20s MC went 10/12 (+0.11 SOL)!
-            await asyncio.sleep(25)
-            mc_45s = await fetch_current_mc(session, mint)
-            if mc_45s is None or mc_45s <= mc_20s * 1.02:
-                log.info(f"SKIP (stalled/rolled over between 20s ${mc_20s/1000:.1f}k and 45s ${mc_45s/1000 if mc_45s else 0:.1f}k) | {name}")
+            # Stage 2: Wait s2_secs and require continued upward staircase
+            await asyncio.sleep(s2_secs)
+            mc_s2 = await fetch_current_mc(session, mint)
+            if mc_s2 is None or mc_s2 <= mc_s1 * 1.02:
+                log.info(f"SKIP (stalled/rolled over between {s1_secs}s ${mc_s1/1000:.1f}k and {s1_secs+s2_secs}s ${mc_s2/1000 if mc_s2 else 0:.1f}k) | {name}")
                 return
 
-            mc_1min = mc_45s
+            mc_1min = mc_s2
 
         if mc_1min is None:
-            log.info(f"SKIP (did not pass 3-stage staircase) | {name}")
+            log.info(f"SKIP (did not pass confirmation staircase) | {name}")
             return
 
         mult_1min = mc_1min / entry_mc if entry_mc > 0 else 0
-        if mult_1min < MIN_1MIN_MULT:
-            log.info(f"SKIP (45s mult {mult_1min:.2f}x < {MIN_1MIN_MULT}x floor) | {name}")
+        if mult_1min < min_mult:
+            log.info(f"SKIP (staircase mult {mult_1min:.2f}x < {min_mult:.2f}x floor) | {name}")
             return
-        if mult_1min > MAX_1MIN_MULT:
-            log.info(f"SKIP (already pumped {mult_1min:.2f}x > {MAX_1MIN_MULT}x cap — avoiding blow-off top) | {name}")
+        if mult_1min > max_mult:
+            log.info(f"SKIP (already pumped {mult_1min:.2f}x > {max_mult:.2f}x cap — avoiding blow-off top) | {name}")
             return
 
         actual_entry = mc_1min
-        if actual_entry < MIN_1MIN_MC:
-            log.info(f"SKIP (Buy MC ${actual_entry/1000:.1f}k < ${MIN_1MIN_MC/1000:.0f}k floor) | {name}")
+        if actual_entry < min_buy_mc:
+            log.info(f"SKIP (Buy MC ${actual_entry/1000:.1f}k < ${min_buy_mc/1000:.0f}k floor) | {name}")
             return
-        if actual_entry > MAX_1MIN_MC:
-            log.info(f"SKIP (Buy MC ${actual_entry/1000:.1f}k > ${MAX_1MIN_MC/1000:.1f}k cap) | {name}")
+        if actual_entry > max_buy_mc:
+            log.info(f"SKIP (Buy MC ${actual_entry/1000:.1f}k > ${max_buy_mc/1000:.1f}k cap) | {name}")
             return
 
-        await buy_coin(session, mint, name, actual_entry, wallet_pubkey, private_key_b58)
+        await buy_coin(session, mint, name, actual_entry, wallet_pubkey, private_key_b58, is_news_match=is_breaking_hype)
     finally:
         if own_session:
             await session.close()

@@ -31,10 +31,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from database import init_db, save_coin, get_recent_coins, get_stats, get_biggest_winners
 from paper import init_paper_db, open_paper_trade, get_paper_stats, get_recent_paper_trades
 from autotrader import on_new_coin, monitor_loop, PAPER_MODE, TRADE_AMOUNT_SOL, SOLANA_RPC, check_rug_risk
-from pumpportal import run_pumpportal_feed, IncubatedToken
+from pumpportal import (
+    run_pumpportal_feed,
+    IncubatedToken,
+    is_duplicate_copycat,
+    register_surfaced_leader,
+    match_meta_cluster,
+)
 from scorer import score_coin
 from tracker import run_outcome_update
-from news import refresh_trends, _trending_symbols, _news_keywords
+from news import refresh_trends, run_news_ws_loop, match_breaking_catalyst, _trending_symbols, _news_keywords
 from whale_tracker import monitor_whale
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -194,11 +200,25 @@ async def process_pairs(pairs: List[dict]) -> List[dict]:
         if save_coin(record):
             new_found.append(record)
             if score >= MIN_TRADE_SCORE:
-                asyncio.create_task(on_new_coin(
-                    session=None, mint=mint,
-                    name=raw["name"], entry_mc=mc,
-                    pair_created_at=(created_ms / 1000) if created_ms else None
-                ))
+                b_cat = match_breaking_catalyst(raw["symbol"], raw["name"])
+                m_cat = None if b_cat else match_meta_cluster(raw["symbol"], raw["name"])
+                cat_term = b_cat["term"] if b_cat else (m_cat["term"] if m_cat else "")
+                hype_reason = (
+                    f"BREAKING ({b_cat['term']}): {b_cat['headline'][:70]}" if b_cat
+                    else (f"VIRAL META ({m_cat['term']}: {m_cat['count']} launches in 10m)" if m_cat else "")
+                )
+                is_dup, dup_msg = is_duplicate_copycat(raw["name"], raw["symbol"], mint, cat_term)
+                if is_dup:
+                    print(f"[CopycatBlocked] {raw['name']} (${raw['symbol']}) | {dup_msg}")
+                else:
+                    register_surfaced_leader(raw["name"], raw["symbol"], mint, cat_term)
+                    asyncio.create_task(on_new_coin(
+                        session=None, mint=mint,
+                        name=raw["name"], entry_mc=mc,
+                        pair_created_at=(created_ms / 1000) if created_ms else None,
+                        is_breaking_hype=bool(b_cat or m_cat),
+                        hype_reason=hype_reason,
+                    ))
 
     return new_found
 
@@ -255,6 +275,13 @@ async def handle_pumpportal_candidate(tok: IncubatedToken, live_mc_usd: float):
 
     score, breakdown = score_coin(raw)
 
+    # Apply live Meta-Cluster / Breaking fast-track bonus if matched in PumpPortal
+    if tok.is_breaking_hype and tok.hype_reason:
+        if "trend_bonus" not in breakdown:
+            score = min(100, score + 20)
+            breakdown["trend_bonus"] = {"score": 20, "max": 25, "reasons": [tok.hype_reason]}
+            breakdown["flags"].append(f"NEWS/HYPE MATCH: {tok.hype_reason}")
+
     if score >= 70 and total_txns > 0:
         avg_trade = vol / total_txns
         if avg_trade > 1500:
@@ -293,14 +320,22 @@ async def handle_pumpportal_candidate(tok: IncubatedToken, live_mc_usd: float):
 
     if save_coin(record):
         age_s = time.time() - created_ts
-        print(f"[PumpPortal] LIVE HIT | {raw['name']} (${raw['symbol']}) | MC ${live_mc_usd/1000:.1f}k | Age {age_s:.0f}s | Score {score}")
+        hype_tag = f" | [HYPE: {tok.hype_reason}]" if tok.is_breaking_hype else ""
+        print(f"[PumpPortal] LIVE HIT | {raw['name']} (${raw['symbol']}) | MC ${live_mc_usd/1000:.1f}k | Age {age_s:.0f}s | Score {score}{hype_tag}")
         await broadcast({"type": "new_coin", "coin": record})
         if score >= MIN_TRADE_SCORE:
-            asyncio.create_task(on_new_coin(
-                session=None, mint=mint,
-                name=raw["name"], entry_mc=live_mc_usd,
-                pair_created_at=created_ts
-            ))
+            is_dup, dup_msg = is_duplicate_copycat(raw["name"], raw["symbol"], mint, tok.catalyst_term)
+            if is_dup:
+                print(f"[CopycatBlocked] {raw['name']} (${raw['symbol']}) | {dup_msg}")
+            else:
+                register_surfaced_leader(raw["name"], raw["symbol"], mint, tok.catalyst_term)
+                asyncio.create_task(on_new_coin(
+                    session=None, mint=mint,
+                    name=raw["name"], entry_mc=live_mc_usd,
+                    pair_created_at=created_ts,
+                    is_breaking_hype=tok.is_breaking_hype,
+                    hype_reason=tok.hype_reason,
+                ))
 
 
 # ── Source A: rotating keyword search ─────────────────────────────────────────
@@ -436,15 +471,16 @@ async def lifespan(app: FastAPI):
     # Fetch trending data immediately on boot
     await refresh_trends()
 
-    poll_task   = asyncio.create_task(poll_loop())
-    pump_task   = asyncio.create_task(run_pumpportal_feed(SOLANA_RPC, seen_mints, handle_pumpportal_candidate))
-    track_task  = asyncio.create_task(track_loop())
-    news_task   = asyncio.create_task(news_loop())
-    trader_task = asyncio.create_task(monitor_loop())
-    whale_task  = asyncio.create_task(monitor_whale())
+    poll_task    = asyncio.create_task(poll_loop())
+    pump_task    = asyncio.create_task(run_pumpportal_feed(SOLANA_RPC, seen_mints, handle_pumpportal_candidate))
+    track_task   = asyncio.create_task(track_loop())
+    news_task    = asyncio.create_task(news_loop())
+    news_ws_task = asyncio.create_task(run_news_ws_loop())
+    trader_task  = asyncio.create_task(monitor_loop())
+    whale_task   = asyncio.create_task(monitor_whale())
     mode = 'PAPER' if PAPER_MODE else 'LIVE'
     print(f"[Boot] AutoTrader started in {mode} mode ({TRADE_AMOUNT_SOL} SOL per trade)")
-    print("[Boot] PumpPortal real-time WebSocket + on-chain curve feed started")
+    print("[Boot] PumpPortal real-time WebSocket + Meta-Cluster Radar + TreeNews <1s WS started")
     print("[Boot] Background tasks started")
     print("[Boot] Open http://localhost:8000 in your browser")
 
@@ -454,6 +490,7 @@ async def lifespan(app: FastAPI):
     pump_task.cancel()
     track_task.cancel()
     news_task.cancel()
+    news_ws_task.cancel()
     trader_task.cancel()
     whale_task.cancel()
 
