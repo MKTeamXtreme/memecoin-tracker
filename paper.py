@@ -55,6 +55,18 @@ def init_paper_db():
     except sqlite3.OperationalError:
         pass
 
+    try:
+        conn.execute("ALTER TABLE paper_trades ADD COLUMN buy_reason TEXT DEFAULT ''")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        conn.execute("ALTER TABLE paper_trades ADD COLUMN buy_source TEXT DEFAULT ''")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
     # Tag trades created after the V4 fast-breakout deployment (17 Oct 19:04) as V4
     try:
         conn.execute("UPDATE paper_trades SET strategy = 'V4' WHERE strategy = 'V3' AND created_at >= 1792260200")
@@ -64,14 +76,22 @@ def init_paper_db():
     
     conn.close()
 
-def open_paper_trade(mint: str, entry_mc: float, amount_sol: float = PAPER_INVEST, strategy: str = "V5"):
+def open_paper_trade(
+    mint: str,
+    entry_mc: float,
+    amount_sol: float = PAPER_INVEST,
+    strategy: str = "V5",
+    buy_reason: str = "",
+    buy_source: str = "",
+):
     if entry_mc <= 0: return
     conn = get_connection()
     try:
         conn.execute(
             """INSERT OR IGNORE INTO paper_trades 
-               (mint, entry_mc, invested_sol, created_at, strategy) VALUES (?, ?, ?, ?, ?)""",
-            (mint, entry_mc, amount_sol, time.time(), strategy)
+               (mint, entry_mc, invested_sol, created_at, strategy, buy_reason, buy_source)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (mint, entry_mc, amount_sol, time.time(), strategy, buy_reason, buy_source)
         )
         conn.commit()
     finally:
@@ -214,7 +234,8 @@ def get_recent_paper_trades(limit: int = 50):
             SELECT pt.mint, c.name, pt.entry_mc, pt.invested_sol,
                    pt.sold_half, pt.sold_half_sol, pt.profit_sol,
                    pt.status, pt.created_at, pt.exit_mc, c.score_breakdown, pt.strategy,
-                   COALESCE(pt.sold_tier2, 0), COALESCE(pt.sold_tier2_sol, 0)
+                   COALESCE(pt.sold_tier2, 0), COALESCE(pt.sold_tier2_sol, 0),
+                   COALESCE(pt.buy_reason, ''), COALESCE(pt.buy_source, '')
             FROM paper_trades pt
             LEFT JOIN coins c ON c.mint = pt.mint
             ORDER BY pt.created_at DESC LIMIT ?
@@ -241,7 +262,9 @@ def get_recent_paper_trades(limit: int = 50):
                 "is_news": is_news,
                 "strategy": r[11] if len(r) > 11 else "V1",
                 "sold_tier2": bool(r[12]),
-                "sold_tier2_sol": r[13]
+                "sold_tier2_sol": r[13],
+                "buy_reason": r[14] or "",
+                "buy_source": r[15] or "",
             })
         return trades
     except sqlite3.OperationalError:

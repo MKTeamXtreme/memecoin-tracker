@@ -317,7 +317,9 @@ async def buy_coin(
     entry_mc: float,
     wallet_pubkey: str = "",
     private_key_b58: str = "",
-    is_news_match: bool = False
+    is_news_match: bool = False,
+    buy_reason: str = "",
+    buy_source: str = "STAIRCASE",
 ):
     _prune_closed_open_trades()
     if mint in open_trades:
@@ -344,10 +346,12 @@ async def buy_coin(
         log.warning(f"SELL PRESSURE BLOCKED | {name} | {bp_msg} - Aborting buy.")
         return
 
+    details = [p for p in [buy_reason, rug_msg, bp_msg if bp_msg != "OK" else ""] if p]
+    full_reason = " | ".join(details)
 
     invest_amt = TRADE_AMOUNT_SOL
-    news_tag = " [BREAKING/META]" if is_news_match else ""
-    log.info(f"BUY | {name} | MC ${entry_mc/1000:.1f}k | {invest_amt} SOL{news_tag} {'[PAPER]' if PAPER_MODE else '[LIVE]'}")
+    news_tag = f" [{buy_source}]" if buy_source else ""
+    log.info(f"BUY | {name} | MC ${entry_mc/1000:.1f}k | {invest_amt} SOL{news_tag} | Why: {full_reason} {'[PAPER]' if PAPER_MODE else '[LIVE]'}")
 
     tx = await execute_swap(
         session, SOL_MINT, mint,
@@ -358,7 +362,7 @@ async def buy_coin(
         return
 
     from paper import open_paper_trade
-    open_paper_trade(mint, entry_mc, invest_amt, strategy="V5")
+    open_paper_trade(mint, entry_mc, invest_amt, strategy="V5", buy_reason=full_reason, buy_source=buy_source)
 
     open_trades[mint] = Trade(
         is_news_match=is_news_match,
@@ -612,7 +616,18 @@ async def on_new_coin(
             log.info(f"SKIP (Buy MC ${actual_entry/1000:.1f}k > ${max_buy_mc/1000:.1f}k cap) | {name}")
             return
 
-        await buy_coin(session, mint, name, actual_entry, wallet_pubkey, private_key_b58, is_news_match=is_breaking_hype)
+        pct_up = int((mult_1min - 1.0) * 100)
+        if is_breaking_hype and hype_reason:
+            b_src = "BREAKING_NEWS" if hype_reason.startswith("BREAKING") else "VIRAL_META"
+            b_rsn = f"{hype_reason} (+{pct_up}% in {s1_secs+s2_secs}s: ${entry_mc/1000:.1f}k->${actual_entry/1000:.1f}k)"
+        else:
+            b_src = "STAIRCASE"
+            b_rsn = f"V5 Staircase (+{pct_up}% in 45s: ${entry_mc/1000:.1f}k->${actual_entry/1000:.1f}k)"
+
+        await buy_coin(
+            session, mint, name, actual_entry, wallet_pubkey, private_key_b58,
+            is_news_match=is_breaking_hype, buy_reason=b_rsn, buy_source=b_src,
+        )
     finally:
         if own_session:
             await session.close()
@@ -662,8 +677,16 @@ async def on_whale_buy(
             pass
 
         tag = f"{buyer_count}-WALLET CONFLUENCE" if buyer_count >= 2 else "SMART-MONEY BUY"
+        sm_reason = (
+            f"Smart-Money {buyer_count}-wallet confluence ({wallet_labels}) @ ${current_mc/1000:.1f}k"
+            if buyer_count >= 2
+            else f"Smart-Money buy by {wallet_labels} @ ${current_mc/1000:.1f}k"
+        )
         log.info(f"{tag} ({wallet_labels}) | {coin_name} ({mint[:8]}..) | MC ${current_mc/1000:.1f}k")
-        await buy_coin(session, mint, coin_name, current_mc, wallet_pubkey, private_key_b58, is_news_match=True)
+        await buy_coin(
+            session, mint, coin_name, current_mc, wallet_pubkey, private_key_b58,
+            is_news_match=True, buy_reason=sm_reason, buy_source="SMART_MONEY",
+        )
     finally:
         if own_session:
             await session.close()

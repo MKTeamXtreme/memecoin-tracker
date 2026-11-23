@@ -577,6 +577,7 @@ function renderPaperTable(trades) {
       <tr>
         <th>Time</th>
         <th>Token</th>
+        <th>Why Bought</th>
         <th>Status</th>
         <th>Entry MC</th>
         <th>Invested (SOL)</th>
@@ -588,9 +589,11 @@ function renderPaperTable(trades) {
 
   const tbody = document.getElementById('history-body');
   if (!trades || trades.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--text-muted)">No paper trades yet...</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:24px;color:var(--text-muted)">No paper trades yet...</td></tr>`;
     return;
   }
+
+  const esc = s => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
   tbody.innerHTML = trades.map(t => {
     const time = new Date(t.created_at * 1000).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'});
@@ -602,15 +605,29 @@ function renderPaperTable(trades) {
     let profitText = t.profit_sol > 0 ? `+${t.profit_sol.toFixed(4)}` : t.profit_sol.toFixed(4);
     
     let halfSoldBadge = t.sold_half ? `<span style="color:var(--success)">Yes</span>` : `<span style="color:var(--text-muted)">No</span>`;
+
+    const src = t.buy_source || '';
+    const srcColors = {
+      'BREAKING_NEWS': '#ef4444',
+      'VIRAL_META':    '#f59e0b',
+      'SMART_MONEY':   '#06b6d4',
+      'STAIRCASE':     '#8b5cf6',
+    };
+    const srcBadge = src
+      ? `<span style="font-size:9px; padding:1px 5px; border-radius:4px; margin-right:5px; background:${srcColors[src] || '#334155'}; color:#fff; font-weight:700">${esc(src.replace('_',' '))}</span>`
+      : '';
+    const rawReason = t.buy_reason || '';
+    const shortReason = rawReason.length > 52 ? rawReason.slice(0, 52) + '…' : (rawReason || '—');
     
     return `
       <tr>
         <td>${time}</td>
         <td class="name-cell" style="cursor:pointer" onclick="copyAddr('${t.mint}', this)">
           <span style="font-size:10px; padding:2px 4px; border-radius:4px; margin-right:4px; background: ${t.strategy === 'V5' ? '#f59e0b' : (t.strategy === 'V4' ? '#a855f7' : (t.strategy === 'V3' ? '#10b981' : (t.strategy === 'V2' ? 'var(--primary)' : 'var(--bg-lighter)')))}; color: ${t.strategy === 'V5' || t.strategy === 'V4' || t.strategy === 'V3' || t.strategy === 'V2' ? '#fff' : 'var(--text-muted)'}; font-weight:600">${t.strategy || 'V1'}</span>
-          ${t.name || '?'} ${t.is_news ? '<span title="Grand Slam News Match!" style="margin-left:5px">📰</span>' : ''}
+          ${esc(t.name || '?')} ${t.is_news ? '<span title="Grand Slam News Match!" style="margin-left:5px">📰</span>' : ''}
           <span class="addr-hint" style="font-size:10px;margin-left:8px;color:var(--text-muted)">click to copy</span>
         </td>
+        <td title="${esc(rawReason)}" style="max-width:260px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-family:var(--font); font-size:10px; color:var(--text-dim)">${srcBadge}${esc(shortReason)}</td>
         <td style="color:${statusColor}; font-weight:600">${t.status}</td>
         <td>${entry}</td>
         <td>${t.invested_sol.toFixed(2)}</td>
