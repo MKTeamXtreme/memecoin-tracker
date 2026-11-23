@@ -41,6 +41,7 @@ from pumpportal import (
 from scorer import score_coin
 from tracker import run_outcome_update
 from news import refresh_trends, run_news_ws_loop, match_breaking_catalyst, _trending_symbols, _news_keywords
+from creator_guard import init_creator_db
 from whale_tracker import monitor_whale
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -464,6 +465,7 @@ async def news_loop():
 async def lifespan(app: FastAPI):
     init_db()
     init_paper_db()
+    init_creator_db()
     for coin in get_recent_coins(limit=5000):
         seen_mints.add(coin["mint"])
     print(f"[Boot] {len(seen_mints)} existing coins pre-loaded")

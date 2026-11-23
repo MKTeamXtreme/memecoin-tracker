@@ -24,6 +24,7 @@ from typing import Callable, Awaitable, Dict, List, Optional, Set, Tuple
 import aiohttp
 from solders.pubkey import Pubkey
 from news import STOPWORDS, match_breaking_catalyst
+from creator_guard import record_creator_launch, get_creator_launch_count, REPEAT_DEPLOY_LIMIT
 
 PUMPPORTAL_WS_URL = "wss://pumpportal.fun/api/data"
 PUMPFUN_PROGRAM   = Pubkey.from_string("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
@@ -397,10 +398,17 @@ async def _ws_listener(seen_mints: Set[str]):
 
                         tok_name = (payload.get("name") or "Unknown").strip() or "Unknown"
                         tok_sym  = (payload.get("symbol") or "???").strip() or "???"
+                        creator  = (payload.get("traderPublicKey") or "").strip()
                         now_ts   = time.time()
 
                         # Feed 100% of Pump.fun launches into the rolling Meta-Cluster Radar
                         _record_launch_for_meta(tok_name, tok_sym, now_ts)
+
+                        # Track creator launch frequency (0 RPC cost) & drop repeat spam deployers immediately
+                        if creator:
+                            record_creator_launch(creator, mint, now_ts)
+                            if get_creator_launch_count(creator) >= REPEAT_DEPLOY_LIMIT:
+                                continue
 
                         init_buy = float(payload.get("initialBuy") or 0.0)
                         if init_buy > MAX_INIT_DEV_BUY:

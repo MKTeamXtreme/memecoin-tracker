@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 import aiohttp
 from paper import update_paper_trade
 from pumpportal import fetch_pump_curve_mc_usd
+from creator_guard import check_creator_risk, record_rugged_coin
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 PAPER_MODE       = True          # Set False to trade real SOL
@@ -333,6 +334,11 @@ async def buy_coin(
         log.warning(f"RUG PREVENTED | {name} | {rug_msg} - Aborting buy.")
         return
 
+    is_bad_creator, creator_msg = await check_creator_risk(session, mint, SOLANA_RPC)
+    if is_bad_creator:
+        log.warning(f"SERIAL RUGGER BLOCKED | {name} | {creator_msg} - Aborting buy.")
+        return
+
     bp_ok, bp_msg = await check_buy_pressure(session, mint)
     if not bp_ok:
         log.warning(f"SELL PRESSURE BLOCKED | {name} | {bp_msg} - Aborting buy.")
@@ -459,6 +465,9 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
                         log.info(f"STOP ({reason_str.upper()}) | {trade.name} | {mult:.2f}x | PnL: {trade.pnl:+.4f} SOL")
                         await sell_coin(session, trade, 1.0, reason_str, wallet_pubkey, private_key_b58)
                         to_close.append(mint)
+                        # Auto-learn: if instant rug (<= $4.5k or <= 0.25x), blacklist creator + log parent funder
+                        if current_mc <= 4_500 or mult <= 0.25:
+                            asyncio.create_task(record_rugged_coin(mint, SOLANA_RPC))
 
                     # ── TIER 1: SELL 62% AT 1.35x (BANKS 83.7% PRINCIPAL & RAISES STOP TO 0.95x) ──
                     elif not trade.half_sold and mult >= TIER1_SELL_AT:
@@ -609,16 +618,19 @@ async def on_new_coin(
             await session.close()
 
 
-# ── WHALE COPY TRADE ─────────────────────────────────────────────────────────
+# ── SMART-MONEY / WHALE CONFLUENCE ENTRY ─────────────────────────────────────
 async def on_whale_buy(
     session: Optional[aiohttp.ClientSession],
     mint: str,
     wallet_pubkey: str = "",
-    private_key_b58: str = ""
+    private_key_b58: str = "",
+    buyer_count: int = 1,
+    wallet_labels: str = "",
 ):
     """
-    Called automatically by whale_tracker.py when a whale buys a coin.
-    Bypasses the 1-min momentum check entirely.
+    Called by whale_tracker.py when smart-money confluence triggers (e.g., 2+ vetted wallets
+    buying the same token within 5m, or 1 vetted wallet on a clean sub-$45k coin).
+    Still enforces real live MC bounds, Helius check_rug_risk, check_creator_risk, and check_buy_pressure.
     """
     own_session = session is None
     if own_session:
@@ -627,13 +639,31 @@ async def on_whale_buy(
 
     try:
         current_mc = await fetch_current_mc(session, mint)
-        # We need an entry MC for the stop loss math
-        entry_mc = current_mc if current_mc else 20000.0 # fallback
+        if not current_mc or current_mc <= 0:
+            log.info(f"SKIP SMART-MONEY (could not read live MC) | {mint[:10]}..")
+            return
 
-        log.info(f"🚀 INSTANT WHALE COPY | {mint} | MC ${entry_mc/1000:.1f}k")
-        
-        # We tag is_news_match=True just so it doubles the invest amount (high conviction)
-        await buy_coin(session, mint, "Whale Coin", entry_mc, wallet_pubkey, private_key_b58, is_news_match=True)
+        max_mc = 85_000 if buyer_count >= 2 else 45_000
+        if current_mc < 10_000 or current_mc > max_mc:
+            log.info(f"SKIP SMART-MONEY (MC ${current_mc/1000:.1f}k outside $10k-${max_mc/1000:.0f}k window) | {mint[:10]}..")
+            return
+
+        # Resolve token name from DexScreener if available so dashboard shows real name
+        coin_name = f"SmartMoney-{mint[:6]}"
+        try:
+            async with session.get(DEXSCREENER_URL.format(mint), timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                if resp.status == 200:
+                    pdata = await resp.json(content_type=None)
+                    pairs = pdata.get("pairs") or []
+                    if pairs:
+                        bt = pairs[0].get("baseToken") or {}
+                        coin_name = bt.get("name") or bt.get("symbol") or coin_name
+        except Exception:
+            pass
+
+        tag = f"{buyer_count}-WALLET CONFLUENCE" if buyer_count >= 2 else "SMART-MONEY BUY"
+        log.info(f"{tag} ({wallet_labels}) | {coin_name} ({mint[:8]}..) | MC ${current_mc/1000:.1f}k")
+        await buy_coin(session, mint, coin_name, current_mc, wallet_pubkey, private_key_b58, is_news_match=True)
     finally:
         if own_session:
             await session.close()

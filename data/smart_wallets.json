@@ -1,0 +1,91 @@
+[
+  {
+    "wallet": "DABHSYBNAurZbZsA4Qa6nvux2MAszUK4Q2aXfPyYsBMD",
+    "label": "SW-DABHSY",
+    "winners": 3,
+    "txs_per_hr": 4.54,
+    "sol_balance": 1.53,
+    "coins": [
+      "@bot make me a billion dollars",
+      "Never Goon",
+      "SolCaps"
+    ]
+  },
+  {
+    "wallet": "CbbgGCDKYctnVjCgxJ6YA8yPNwwcHbbdCASctzLufxup",
+    "label": "SW-CbbgGC",
+    "winners": 2,
+    "txs_per_hr": 32.02,
+    "sol_balance": 0.55,
+    "coins": [
+      "LOVELESS",
+      "The Jacket Stays On"
+    ]
+  },
+  {
+    "wallet": "Ds32qrAHZSg1qvFYAryvxR54zCLCWkXjsE5qBNQxGFEV",
+    "label": "SW-Ds32qr",
+    "winners": 2,
+    "txs_per_hr": 2.29,
+    "sol_balance": 2.49,
+    "coins": [
+      "Horse Inu",
+      "Mr.lean"
+    ]
+  },
+  {
+    "wallet": "C5gE5UwbUBm31GNhWCzWBWxtJ6sgrfYk7nwgzMXcDhpt",
+    "label": "SW-C5gE5U",
+    "winners": 2,
+    "txs_per_hr": 16.05,
+    "sol_balance": 3.29,
+    "coins": [
+      "Horse Inu",
+      "bop dog"
+    ]
+  },
+  {
+    "wallet": "AHwJSnFNUiAU9FfT5ewW2osqMo938WtL7KhfsJyfpaN2",
+    "label": "SW-AHwJSn",
+    "winners": 2,
+    "txs_per_hr": 6.63,
+    "sol_balance": 158.5,
+    "coins": [
+      "Never Goon",
+      "Soku"
+    ]
+  },
+  {
+    "wallet": "DuCHeSSQMT8psckL2Rqm6GkvJkL5F4zV9HZAi4oeKVfv",
+    "label": "SW-DuCHeS",
+    "winners": 2,
+    "txs_per_hr": 8.44,
+    "sol_balance": 9.41,
+    "coins": [
+      "GohBomb",
+      "HYPE"
+    ]
+  },
+  {
+    "wallet": "8jBre191qVNX1EYUx1xPLz7GcsuPPEvchs7Po5nBgohe",
+    "label": "SW-8jBre1",
+    "winners": 2,
+    "txs_per_hr": 1.8,
+    "sol_balance": 2.96,
+    "coins": [
+      "GTAFICATION",
+      "Horse Inu"
+    ]
+  },
+  {
+    "wallet": "7LEEiLKQWrRJ3MWYzG6sMbGgSGrTpEAF5Hq3JtRWQ2Ch",
+    "label": "SW-7LEEiL",
+    "winners": 2,
+    "txs_per_hr": 4.24,
+    "sol_balance": 1.92,
+    "coins": [
+      "Just start calling",
+      "The Jacket Stays On"
+    ]
+  }
+]
