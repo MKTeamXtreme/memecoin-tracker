@@ -300,7 +300,7 @@ def _prune_closed_open_trades():
     try:
         from database import get_connection
         conn = get_connection()
-        rows = conn.execute("SELECT mint FROM paper_trades WHERE status = 'OPEN' AND strategy IN ('V4', 'V5')").fetchall()
+        rows = conn.execute("SELECT mint FROM paper_trades WHERE status = 'OPEN' AND strategy IN ('V4', 'V5', 'APEX')").fetchall()
         conn.close()
         db_open = {r[0] for r in rows}
         for m in list(open_trades.keys()):
@@ -362,7 +362,7 @@ async def buy_coin(
         return
 
     from paper import open_paper_trade
-    open_paper_trade(mint, entry_mc, invest_amt, strategy="V5", buy_reason=full_reason, buy_source=buy_source)
+    open_paper_trade(mint, entry_mc, invest_amt, strategy="APEX", buy_reason=full_reason, buy_source=buy_source)
 
     open_trades[mint] = Trade(
         is_news_match=is_news_match,
@@ -407,7 +407,7 @@ def restore_open_v4_trades():
                    COALESCE(pt.sold_tier2_sol, 0) as sold_tier2_sol, pt.peak_mc, pt.created_at
             FROM paper_trades pt
             LEFT JOIN coins c ON c.mint = pt.mint
-            WHERE pt.status = 'OPEN' AND pt.strategy IN ('V4', 'V5')
+            WHERE pt.status = 'OPEN' AND pt.strategy IN ('V4', 'V5', 'APEX')
         """).fetchall()
         conn.close()
         for r in rows:

@@ -26,6 +26,8 @@ function switchTab(tab) {
   if (paperV4Tab) paperV4Tab.classList.toggle('active', tab === 'paper-v4');
   const paperV5Tab = document.getElementById('tab-paper-v5');
   if (paperV5Tab) paperV5Tab.classList.toggle('active', tab === 'paper-v5');
+  const paperApexTab = document.getElementById('tab-paper-apex');
+  if (paperApexTab) paperApexTab.classList.toggle('active', tab === 'paper-apex');
   
   if (tab === 'winners') {
     fetch(`${API_BASE}/biggest_winners`)
@@ -35,6 +37,16 @@ function switchTab(tab) {
         renderTable(winnerCoins);
       })
       .catch(() => renderTable(allCoins));
+  } else if (tab === 'paper-apex') {
+    fetch(`${API_BASE}/paper_trades?limit=100`)
+      .then(r => r.json())
+      .then(trades => {
+        const apexTrades = trades.filter(t => t.strategy === 'APEX');
+        renderPaperTable(apexTrades);
+      })
+      .catch(() => {
+        document.getElementById('history-body').innerHTML = '<tr><td colspan="9" style="text-align:center">Error loading APEX paper trades</td></tr>';
+      });
   } else if (tab === 'paper-v5') {
     fetch(`${API_BASE}/paper_trades?limit=100`)
       .then(r => r.json())
@@ -344,30 +356,37 @@ function renderStats(s) {
   document.getElementById('s-with-outcomes').textContent = s.brackets?.reduce((a,b) => a + (b.total||0), 0) || 0;
 
   if (s.paper) {
+    const apexProfit = s.paper.apex_profit_sol || 0.0;
     const v5Profit = s.paper.v5_profit_sol || 0.0;
     const v4Profit = s.paper.v4_profit_sol || 0.0;
     const v3Profit = s.paper.v3_profit_sol || 0.0;
     const v2Profit = s.paper.v2_profit_sol || 0.0;
     const v1Profit = s.paper.v1_profit_sol || 0.0;
 
+    const elApex = document.getElementById('s-paper-pnl-apex');
+    if (elApex) {
+      elApex.textContent = `APEX: ${apexProfit > 0 ? '+' : ''}${apexProfit.toFixed(2)} SOL`;
+      elApex.style.color = apexProfit >= 0 ? 'var(--success)' : 'var(--danger)';
+    }
+
+    const elApexWr = document.getElementById('s-paper-apex-wr');
+    if (elApexWr) {
+      const apexClosed = s.paper.apex_closed || 0;
+      const apexWins = s.paper.apex_wins || 0;
+      if (apexClosed > 0) {
+        const wr = Math.round((apexWins / apexClosed) * 100);
+        elApexWr.textContent = `APEX Win Rate: ${wr}% (${apexWins}/${apexClosed})`;
+        elApexWr.style.color = wr >= 50 ? 'var(--success)' : 'var(--warn)';
+      } else {
+        elApexWr.textContent = 'APEX Win Rate: — (0 closed)';
+        elApexWr.style.color = 'var(--text-muted)';
+      }
+    }
+
     const elV5 = document.getElementById('s-paper-pnl-v5');
     if (elV5) {
       elV5.textContent = `V5: ${v5Profit > 0 ? '+' : ''}${v5Profit.toFixed(2)} SOL`;
-      elV5.style.color = v5Profit >= 0 ? 'var(--success)' : 'var(--danger)';
-    }
-
-    const elV5Wr = document.getElementById('s-paper-v5-wr');
-    if (elV5Wr) {
-      const v5Closed = s.paper.v5_closed || 0;
-      const v5Wins = s.paper.v5_wins || 0;
-      if (v5Closed > 0) {
-        const wr = Math.round((v5Wins / v5Closed) * 100);
-        elV5Wr.textContent = `V5 Win Rate: ${wr}% (${v5Wins}/${v5Closed})`;
-        elV5Wr.style.color = wr >= 50 ? 'var(--success)' : 'var(--amber)';
-      } else {
-        elV5Wr.textContent = 'V5 Win Rate: — (0 closed)';
-        elV5Wr.style.color = 'var(--text-muted)';
-      }
+      elV5.style.color = 'var(--text-muted)';
     }
 
     const elV4 = document.getElementById('s-paper-pnl-v4');
@@ -623,7 +642,7 @@ function renderPaperTable(trades) {
       <tr>
         <td>${time}</td>
         <td class="name-cell" style="cursor:pointer" onclick="copyAddr('${t.mint}', this)">
-          <span style="font-size:10px; padding:2px 4px; border-radius:4px; margin-right:4px; background: ${t.strategy === 'V5' ? '#f59e0b' : (t.strategy === 'V4' ? '#a855f7' : (t.strategy === 'V3' ? '#10b981' : (t.strategy === 'V2' ? 'var(--primary)' : 'var(--bg-lighter)')))}; color: ${t.strategy === 'V5' || t.strategy === 'V4' || t.strategy === 'V3' || t.strategy === 'V2' ? '#fff' : 'var(--text-muted)'}; font-weight:600">${t.strategy || 'V1'}</span>
+          <span style="font-size:10px; padding:2px 4px; border-radius:4px; margin-right:4px; background: ${t.strategy === 'APEX' ? '#10b981' : (t.strategy === 'V5' ? '#f59e0b' : (t.strategy === 'V4' ? '#a855f7' : (t.strategy === 'V3' ? '#059669' : (t.strategy === 'V2' ? 'var(--primary)' : 'var(--bg-lighter)'))))}; color: ${t.strategy === 'APEX' || t.strategy === 'V5' || t.strategy === 'V4' || t.strategy === 'V3' || t.strategy === 'V2' ? '#fff' : 'var(--text-muted)'}; font-weight:700">${t.strategy || 'V1'}</span>
           ${esc(t.name || '?')} ${t.is_news ? '<span title="Grand Slam News Match!" style="margin-left:5px">📰</span>' : ''}
           <span class="addr-hint" style="font-size:10px;margin-left:8px;color:var(--text-muted)">click to copy</span>
         </td>
