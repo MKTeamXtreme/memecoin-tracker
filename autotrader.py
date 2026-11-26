@@ -28,8 +28,9 @@ from creator_guard import check_creator_risk, record_rugged_coin
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 PAPER_MODE       = True          # Set False to trade real SOL
 TRADE_AMOUNT_SOL = 0.02          # SOL per trade
-TIER1_SELL_AT    = 1.35          # Tier 1: Sell 62% at 1.35x (banks 0.837x principal & raises floor to 0.95x)
-TIER2_SELL_AT    = 1.55          # Tier 2: Sell 23% at 1.55x ($40k-$47k pre-graduation wall -> locks +19.4% cash + 15% Moonbag!)
+TIER1_SELL_AT    = 1.40          # Tier 1: Sell 50% at 1.40x (banks 0.70x principal & raises floor to 0.95x)
+TIER2_SELL_AT    = 1.75          # Tier 2: Sell 35% at 1.75x (banks +0.6125x -> 1.3125x locked + 15% remaining)
+TIER3_SELL_AT    = 2.50          # Tier 3: Sell 10% at 2.50x (banks +0.25x -> 1.5625x locked + 5% Moonbag!)
 MIN_COIN_AGE_SECS= 110           # Min token age at discovery (110s filters slot-0 dumps while keeping 159s-167s organic entries)
 MIN_DISCOVERY_MC = 18_500        # Min discovery MC at min 0 ($18.5k-$25.5k Golden Zone)
 MAX_ENTRY_MC     = 25_500        # Max discovery MC at min 0
@@ -38,7 +39,7 @@ MAX_1MIN_MC      = 30_800        # Max 45s staircase buy MC ($30.8k cap: enters 
 KOTH_TRAP_LOW    = 30_800        # Lower bound of Pump.fun King-of-the-Hill dump wall ($30.8k-$33.8k)
 KOTH_TRAP_HIGH   = 33_800        # Upper bound of KOTH dump wall
 STOP_LOSS_AT     = 0.58          # Structural stop loss at 0.58x (avoids 0.60x-0.75x first-pullback shakeouts on 10x-48x runners)
-TRAILING_STOP_PCT= 0.28          # Trailing stop loss for 15% moonbag (28% drop from peak = 0.72x peak)
+TRAILING_STOP_PCT= 0.28          # Trailing stop loss for moonbag/remainder (28% drop from peak = 0.72x peak)
 MOONBAG_EXIT_HRS = 24            # Sell moonbag after this many hours
 MIN_1MIN_MULT    = 1.16          # Min 45s staircase mult from discovery (+16%)
 MAX_1MIN_MULT    = 1.54          # Max 45s staircase mult from discovery (+54% cap: filters vertical blow-off tops)
@@ -75,6 +76,7 @@ class Trade:
     sol_invested: float = TRADE_AMOUNT_SOL
     half_sold:    bool  = False
     tier2_sold:   bool  = False
+    tier3_sold:   bool  = False
     peak_mult:    float = 0.0
     sol_returned: float = 0.0
     closed:       bool  = False
@@ -397,14 +399,15 @@ async def sell_coin(
 
 
 def restore_open_v4_trades():
-    """Reload any OPEN V4 trades from SQLite on startup so server restarts never orphan live trades."""
+    """Reload any OPEN V4/V5/APEX trades from SQLite on startup so server restarts never orphan live trades."""
     try:
         from database import get_connection
         conn = get_connection()
         rows = conn.execute("""
             SELECT pt.mint, COALESCE(c.name, pt.mint) as name, pt.entry_mc, pt.invested_sol,
                    pt.sold_half, pt.sold_half_sol, COALESCE(pt.sold_tier2, 0) as sold_tier2,
-                   COALESCE(pt.sold_tier2_sol, 0) as sold_tier2_sol, pt.peak_mc, pt.created_at
+                   COALESCE(pt.sold_tier2_sol, 0) as sold_tier2_sol, pt.peak_mc, pt.created_at,
+                   COALESCE(pt.sold_tier3, 0) as sold_tier3, COALESCE(pt.sold_tier3_sol, 0) as sold_tier3_sol
             FROM paper_trades pt
             LEFT JOIN coins c ON c.mint = pt.mint
             WHERE pt.status = 'OPEN' AND pt.strategy IN ('V4', 'V5', 'APEX')
@@ -423,13 +426,14 @@ def restore_open_v4_trades():
                     sol_invested=float(r[3] or TRADE_AMOUNT_SOL),
                     half_sold=bool(r[4]),
                     tier2_sold=bool(r[6]),
+                    tier3_sold=bool(r[10]),
                     peak_mult=peak_mc / entry_mc if entry_mc > 0 else 1.0,
-                    sol_returned=float(r[5] or 0.0) + float(r[7] or 0.0),
+                    sol_returned=float(r[5] or 0.0) + float(r[7] or 0.0) + float(r[11] or 0.0),
                 )
         if rows:
-            log.info(f"Restored {len(rows)} OPEN V4 trade(s) from database into 3s monitor loop.")
+            log.info(f"Restored {len(rows)} OPEN trade(s) from database into 3s monitor loop.")
     except Exception as e:
-        log.error(f"Could not restore open V4 trades: {e}")
+        log.error(f"Could not restore open trades: {e}")
 
 
 # ── TRADE MONITOR LOOP ────────────────────────────────────────────────────────
@@ -455,7 +459,7 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
                     trade.peak_mult = max(trade.peak_mult, mult)
                     elapsed_secs = time.time() - trade.entry_time
 
-                    # Sync paper trading database in real time with actual current_mc (monitor is source of truth for V4/V5)
+                    # Sync paper trading database in real time with actual current_mc (monitor is source of truth for V4/V5/APEX)
                     update_paper_trade(mint, current_mc, elapsed_secs=elapsed_secs, from_monitor=True)
 
                     # ── INITIAL STOP LOSS (0.58x) OR 180s STAGNATION TIME-STOP ──
@@ -472,26 +476,40 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
                         # Auto-learn: if instant rug (<= $4.5k or <= 0.25x), blacklist creator + log parent funder
                         if current_mc <= 4_500 or mult <= 0.25:
                             asyncio.create_task(record_rugged_coin(mint, SOLANA_RPC))
+                        continue
 
-                    # ── TIER 1: SELL 62% AT 1.35x (BANKS 83.7% PRINCIPAL & RAISES STOP TO 0.95x) ──
-                    elif not trade.half_sold and mult >= TIER1_SELL_AT:
-                        sol_back = (trade.sol_invested * 0.62) * TIER1_SELL_AT
+                    tier_triggered = False
+
+                    # ── TIER 1: SELL 50% AT 1.40x (BANKS 70% PRINCIPAL & RAISES FLOOR TO 0.95x) ──
+                    if not trade.half_sold and mult >= TIER1_SELL_AT:
+                        sol_back = (trade.sol_invested * 0.50) * TIER1_SELL_AT
                         trade.sol_returned += sol_back
                         trade.half_sold = True
-                        log.info(f"TIER 1 SELL (62%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL")
-                        await sell_coin(session, trade, 0.62, "Tier 1 (62% at 1.35x)", wallet_pubkey, private_key_b58)
+                        tier_triggered = True
+                        log.info(f"TIER 1 SELL (50%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL")
+                        await sell_coin(session, trade, 0.50, f"Tier 1 (50% at {TIER1_SELL_AT}x)", wallet_pubkey, private_key_b58)
 
-                    # ── TIER 2: SELL 23% AT 1.55x PRE-GRADUATION WALL (LOCKS +19.4% CASH + 15% MOONBAG!) ──
-                    elif trade.half_sold and not trade.tier2_sold and mult >= TIER2_SELL_AT:
-                        sol_back = (trade.sol_invested * 0.23) * TIER2_SELL_AT
+                    # ── TIER 2: SELL 35% AT 1.75x (LOCKS +31.25% CASH + 15% REMAINING) ──
+                    if trade.half_sold and not trade.tier2_sold and mult >= TIER2_SELL_AT:
+                        sol_back = (trade.sol_invested * 0.35) * TIER2_SELL_AT
                         trade.sol_returned += sol_back
                         trade.tier2_sold = True
-                        log.info(f"TIER 2 SELL (23%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (Total Returned: {trade.sol_returned:.4f} SOL)")
-                        await sell_coin(session, trade, 0.23, "Tier 2 (23% at 1.55x pre-grad wall)", wallet_pubkey, private_key_b58)
+                        tier_triggered = True
+                        log.info(f"TIER 2 SELL (35%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (Total Returned: {trade.sol_returned:.4f} SOL)")
+                        await sell_coin(session, trade, 0.35, f"Tier 2 (35% at {TIER2_SELL_AT}x)", wallet_pubkey, private_key_b58)
 
-                    # ── TRAILING STOP LOSS (15% MOONBAG / 38% POST-T1) ───────────────────────
-                    elif trade.half_sold and mult <= max(0.95, trade.peak_mult * (1.0 - TRAILING_STOP_PCT)):
-                        rem_fraction = 0.15 if trade.tier2_sold else 0.38
+                    # ── TIER 3: SELL 10% AT 2.50x (LOCKS +56.25% CASH + 5% MOONBAG!) ──
+                    if trade.tier2_sold and not trade.tier3_sold and mult >= TIER3_SELL_AT:
+                        sol_back = (trade.sol_invested * 0.10) * TIER3_SELL_AT
+                        trade.sol_returned += sol_back
+                        trade.tier3_sold = True
+                        tier_triggered = True
+                        log.info(f"TIER 3 SELL (10%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (Total Returned: {trade.sol_returned:.4f} SOL)")
+                        await sell_coin(session, trade, 0.10, f"Tier 3 (10% at {TIER3_SELL_AT}x)", wallet_pubkey, private_key_b58)
+
+                    # ── TRAILING STOP LOSS (5% MOONBAG / 15% POST-T2 / 50% POST-T1) ──────────
+                    if trade.half_sold and mult <= max(0.95, trade.peak_mult * (1.0 - TRAILING_STOP_PCT)):
+                        rem_fraction = 0.05 if trade.tier3_sold else (0.15 if trade.tier2_sold else 0.50)
                         sol_back = (trade.sol_invested * rem_fraction) * mult
                         trade.sol_returned += sol_back
                         trade.closed = True
@@ -502,7 +520,7 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
 
                     # ── 24HR MOONBAG EXIT ─────────────────────────────────────
                     elif trade.elapsed_hrs >= MOONBAG_EXIT_HRS:
-                        rem_fraction = 0.15 if trade.tier2_sold else (0.38 if trade.half_sold else 1.0)
+                        rem_fraction = 0.05 if trade.tier3_sold else (0.15 if trade.tier2_sold else (0.50 if trade.half_sold else 1.0))
                         sol_back = (trade.sol_invested * rem_fraction) * mult
                         trade.sol_returned += sol_back
                         trade.closed = True
@@ -511,7 +529,7 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
                         await sell_coin(session, trade, rem_fraction, "24hr moonbag", wallet_pubkey, private_key_b58)
                         to_close.append(mint)
 
-                    else:
+                    elif not tier_triggered:
                         log.info(f"WATCHING  | {trade.name} | {mult:.2f}x | {trade.elapsed_hrs:.1f}hr elapsed")
 
                 # Move closed trades out
@@ -644,7 +662,7 @@ async def on_whale_buy(
 ):
     """
     Called by whale_tracker.py when smart-money confluence triggers (e.g., 2+ vetted wallets
-    buying the same token within 5m, or 1 vetted wallet on a clean sub-$45k coin).
+    buying the same token within 5m, or 1 vetted wallet on a clean sub-$14k coin).
     Still enforces real live MC bounds, Helius check_rug_risk, check_creator_risk, and check_buy_pressure.
     """
     own_session = session is None
@@ -658,7 +676,7 @@ async def on_whale_buy(
             log.info(f"SKIP SMART-MONEY (could not read live MC) | {mint[:10]}..")
             return
 
-        max_mc = 85_000 if buyer_count >= 2 else 45_000
+        max_mc = 85_000 if buyer_count >= 2 else 14_000
         if current_mc < 10_000 or current_mc > max_mc:
             log.info(f"SKIP SMART-MONEY (MC ${current_mc/1000:.1f}k outside $10k-${max_mc/1000:.0f}k window) | {mint[:10]}..")
             return
@@ -695,5 +713,5 @@ async def on_whale_buy(
 # ── STANDALONE TEST ───────────────────────────────────────────────────────────
 if __name__ == "__main__":
     log.info(f"AutoTrader starting in {'PAPER' if PAPER_MODE else 'LIVE'} mode")
-    log.info(f"Trade size: {TRADE_AMOUNT_SOL} SOL | Stop loss: {STOP_LOSS_AT*100:.0f}% | Tier 1: {TIER1_SELL_AT}x | Tier 2: {TIER2_SELL_AT}x | Exit: {MOONBAG_EXIT_HRS}hr")
+    log.info(f"Trade size: {TRADE_AMOUNT_SOL} SOL | Stop loss: {STOP_LOSS_AT*100:.0f}% | T1: {TIER1_SELL_AT}x | T2: {TIER2_SELL_AT}x | T3: {TIER3_SELL_AT}x | Exit: {MOONBAG_EXIT_HRS}hr")
     asyncio.run(monitor_loop())

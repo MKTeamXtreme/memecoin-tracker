@@ -613,7 +613,7 @@ function renderPaperTable(trades) {
         <th>Status</th>
         <th>Entry MC</th>
         <th>Invested (SOL)</th>
-        <th>Half Sold?</th>
+        <th>Tiers Hit</th>
         <th>Exit MC</th>
         <th>Net Profit</th>
         <th title="Estimated net PnL at 0.10 SOL/trade after ~2% buy + ~2% sell fees/slippage + 0.0004 SOL/tx priority gas">Est. Live @0.10</th>
@@ -637,7 +637,14 @@ function renderPaperTable(trades) {
     let profitColor = t.profit_sol > 0 ? 'var(--success)' : (t.profit_sol < 0 ? 'var(--danger)' : 'var(--text)');
     let profitText = t.profit_sol > 0 ? `+${t.profit_sol.toFixed(4)}` : t.profit_sol.toFixed(4);
     
-    let halfSoldBadge = t.sold_half ? `<span style="color:var(--success)">Yes</span>` : `<span style="color:var(--text-muted)">No</span>`;
+    let halfSoldBadge = `<span style="color:var(--text-muted)">—</span>`;
+    if (t.sold_tier3) {
+      halfSoldBadge = `<span style="color:#10b981; font-weight:700">T1·T2·T3</span>`;
+    } else if (t.sold_tier2) {
+      halfSoldBadge = `<span style="color:var(--success); font-weight:600">T1·T2</span>`;
+    } else if (t.sold_half) {
+      halfSoldBadge = `<span style="color:var(--success)">T1</span>`;
+    }
 
     const src = t.buy_source || '';
     const srcColors = {

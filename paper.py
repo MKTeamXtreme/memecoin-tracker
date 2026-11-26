@@ -2,10 +2,11 @@ import sqlite3
 import time
 from database import get_connection
 
-# Strategy: V5 Pre-Graduation Wall + Anti-Shakeout Ladder
+# Strategy: APEX 3-Tier Exit Ladder (50% @ 1.40x, 35% @ 1.75x, 10% @ 2.50x, 5% Moonbag)
 PAPER_INVEST      = 0.02
-PAPER_HALF_AT     = 1.35  # Tier 1: sell 62% at 1.35x (banks 83.7% principal & raises stop floor to 0.95x)
-PAPER_TIER2_AT    = 1.55  # Tier 2: sell 23% at 1.55x ($40k-$47k pre-graduation wall -> locks +19.4% cash + 15% Moonbag!)
+PAPER_HALF_AT     = 1.40  # Tier 1: sell 50% at 1.40x (banks 70.0% principal & raises stop floor to 0.95x)
+PAPER_TIER2_AT    = 1.75  # Tier 2: sell 35% at 1.75x (banks +61.25% -> 1.3125x locked cash + 15% remaining)
+PAPER_TIER3_AT    = 2.50  # Tier 3: sell 10% at 2.50x (banks +25.0% -> 1.5625x locked cash + 5% Moonbag!)
 PAPER_EXIT_HRS    = 24    # close moonbag after 24 hours
 TRAILING_STOP_PCT = 0.28  # Trailing stop loss (28% drop from peak = 0.72x peak)
 
@@ -21,6 +22,8 @@ def init_paper_db():
             sold_half_sol   REAL    DEFAULT 0,
             sold_tier2      INTEGER DEFAULT 0,
             sold_tier2_sol  REAL    DEFAULT 0,
+            sold_tier3      INTEGER DEFAULT 0,
+            sold_tier3_sol  REAL    DEFAULT 0,
             exit_mc         REAL,
             exit_sol        REAL    DEFAULT 0,
             profit_sol      REAL    DEFAULT 0,
@@ -51,6 +54,18 @@ def init_paper_db():
 
     try:
         conn.execute("ALTER TABLE paper_trades ADD COLUMN sold_tier2_sol REAL DEFAULT 0")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        conn.execute("ALTER TABLE paper_trades ADD COLUMN sold_tier3 INTEGER DEFAULT 0")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        conn.execute("ALTER TABLE paper_trades ADD COLUMN sold_tier3_sol REAL DEFAULT 0")
         conn.commit()
     except sqlite3.OperationalError:
         pass
@@ -119,21 +134,29 @@ def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float, from_m
             return
         updates = {}
 
-        # Tier 1: Sell 62% at 1.35x (banks 83.7% principal & raises stop floor to 0.95x)
+        # Tier 1: Sell 50% at 1.40x (banks 70.0% principal & raises stop floor to 0.95x)
         if not trade["sold_half"] and current_mc >= trade["entry_mc"] * PAPER_HALF_AT:
-            sold_half_sol = (trade["invested_sol"] * 0.62) * PAPER_HALF_AT
+            sold_half_sol = (trade["invested_sol"] * 0.50) * PAPER_HALF_AT
             updates["sold_half"]     = 1
             updates["sold_half_sol"] = sold_half_sol
             trade["sold_half"]     = 1
             trade["sold_half_sol"] = sold_half_sol
 
-        # Tier 2: Sell 23% at 1.55x pre-graduation wall (locks +19.4% cash + 15% Moonbag!)
+        # Tier 2: Sell 35% at 1.75x (banks +61.25% -> 1.3125x locked cash + 15% remaining)
         if trade["sold_half"] and not trade.get("sold_tier2") and current_mc >= trade["entry_mc"] * PAPER_TIER2_AT:
-            sold_tier2_sol = (trade["invested_sol"] * 0.23) * PAPER_TIER2_AT
+            sold_tier2_sol = (trade["invested_sol"] * 0.35) * PAPER_TIER2_AT
             updates["sold_tier2"]     = 1
             updates["sold_tier2_sol"] = sold_tier2_sol
             trade["sold_tier2"]     = 1
             trade["sold_tier2_sol"] = sold_tier2_sol
+
+        # Tier 3: Sell 10% at 2.50x (banks +25.0% -> 1.5625x locked cash + 5% Moonbag!)
+        if trade.get("sold_tier2") and not trade.get("sold_tier3") and current_mc >= trade["entry_mc"] * PAPER_TIER3_AT:
+            sold_tier3_sol = (trade["invested_sol"] * 0.10) * PAPER_TIER3_AT
+            updates["sold_tier3"]     = 1
+            updates["sold_tier3_sol"] = sold_tier3_sol
+            trade["sold_tier3"]     = 1
+            trade["sold_tier3_sol"] = sold_tier3_sol
 
         # Track peak MC
         peak_mc = max(trade.get("peak_mc") or current_mc, current_mc)
@@ -146,10 +169,12 @@ def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float, from_m
         trade_elapsed = time.time() - (trade.get("created_at") or time.time())
 
         # Determine remaining position fraction
-        if trade.get("sold_tier2") or updates.get("sold_tier2"):
+        if trade.get("sold_tier3") or updates.get("sold_tier3"):
+            rem_frac = 0.05
+        elif trade.get("sold_tier2") or updates.get("sold_tier2"):
             rem_frac = 0.15
         elif trade.get("sold_half") or updates.get("sold_half"):
-            rem_frac = 0.38
+            rem_frac = 0.50
         else:
             rem_frac = 1.0
 
@@ -164,10 +189,11 @@ def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float, from_m
         # Close moonbag at 24hr
         is_final = elapsed_secs >= PAPER_EXIT_HRS * 3600
         
-        # Already realized returned SOL from previous tier sales
+        # Already realized returned SOL from previous tier sales (trade dict is updated in-place above)
         already_locked = (
-            (trade.get("sold_half_sol") or 0) + (updates.get("sold_half_sol") or 0) +
-            (trade.get("sold_tier2_sol") or 0) + (updates.get("sold_tier2_sol") or 0)
+            (trade.get("sold_half_sol") or 0.0) +
+            (trade.get("sold_tier2_sol") or 0.0) +
+            (trade.get("sold_tier3_sol") or 0.0)
         )
 
         # Real-time mark-to-market
@@ -193,6 +219,7 @@ def estimate_live_net_sol(
     profit_sol: float,
     sold_half: bool,
     sold_tier2: bool,
+    sold_tier3: bool = False,
     live_size: float = 0.10,
 ) -> float:
     """
@@ -200,7 +227,7 @@ def estimate_live_net_sol(
     after:
       - 2.0% entry cost (1.0% Pump.fun fee + 1.0% slippage)
       - 2.0% exit cost  (1.0% Pump.fun fee + 1.0% slippage)
-      - 0.0004 SOL priority gas per transaction (2 txs on stop/rug, 3 on T1, 4 on T1+T2)
+      - 0.0004 SOL priority gas per transaction (2 txs on stop/rug, 3 on T1, 4 on T1+T2, 5 on T1+T2+T3)
       (assumes empty SPL ATA rent 0.00204 SOL is auto-reclaimed on close).
     """
     inv = float(invested_sol or 0.0)
@@ -208,7 +235,7 @@ def estimate_live_net_sol(
         return 0.0
     scale = live_size / inv
     gross_returned = max(0.0, (inv + float(profit_sol or 0.0)) * scale)
-    tx_count = 4 if sold_tier2 else (3 if sold_half else 2)
+    tx_count = 5 if sold_tier3 else (4 if sold_tier2 else (3 if sold_half else 2))
     var_fees = 0.02 * live_size + 0.02 * gross_returned
     gas_fees = tx_count * 0.0004
     return gross_returned - live_size - var_fees - gas_fees
@@ -237,10 +264,10 @@ def get_paper_stats():
             apex_closed = conn.execute("SELECT COUNT(*) FROM paper_trades WHERE strategy = 'APEX' AND status = 'CLOSED'").fetchone()[0] or 0
             apex_wins   = conn.execute("SELECT COUNT(*) FROM paper_trades WHERE strategy = 'APEX' AND status = 'CLOSED' AND profit_sol > 0").fetchone()[0] or 0
             apex_rows = conn.execute(
-                "SELECT invested_sol, profit_sol, sold_half, COALESCE(sold_tier2, 0) FROM paper_trades WHERE strategy = 'APEX' AND status = 'CLOSED'"
+                "SELECT invested_sol, profit_sol, sold_half, COALESCE(sold_tier2, 0), COALESCE(sold_tier3, 0) FROM paper_trades WHERE strategy = 'APEX' AND status = 'CLOSED'"
             ).fetchall()
             apex_live_est = sum(
-                estimate_live_net_sol(r[0], r[1], bool(r[2]), bool(r[3]), live_size=0.10)
+                estimate_live_net_sol(r[0], r[1], bool(r[2]), bool(r[3]), bool(r[4]), live_size=0.10)
                 for r in apex_rows
             )
             profit = conn.execute("SELECT SUM(profit_sol) FROM paper_trades").fetchone()[0] or 0.0
@@ -286,7 +313,8 @@ def get_recent_paper_trades(limit: int = 50):
                    pt.sold_half, pt.sold_half_sol, pt.profit_sol,
                    pt.status, pt.created_at, pt.exit_mc, c.score_breakdown, pt.strategy,
                    COALESCE(pt.sold_tier2, 0), COALESCE(pt.sold_tier2_sol, 0),
-                   COALESCE(pt.buy_reason, ''), COALESCE(pt.buy_source, '')
+                   COALESCE(pt.buy_reason, ''), COALESCE(pt.buy_source, ''),
+                   COALESCE(pt.sold_tier3, 0), COALESCE(pt.sold_tier3_sol, 0)
             FROM paper_trades pt
             LEFT JOIN coins c ON c.mint = pt.mint
             ORDER BY pt.created_at DESC LIMIT ?
@@ -299,7 +327,7 @@ def get_recent_paper_trades(limit: int = 50):
             if r[10]:
                 is_news = "trend_bonus" in r[10] or "NEWS/HYPE MATCH" in r[10]
 
-            live_est = estimate_live_net_sol(r[3], r[6] or 0.0, bool(r[4]), bool(r[12]), live_size=0.10)
+            live_est = estimate_live_net_sol(r[3], r[6] or 0.0, bool(r[4]), bool(r[12]), bool(r[16]), live_size=0.10)
             trades.append({
                 "mint": r[0],
                 "name": r[1],
@@ -316,6 +344,8 @@ def get_recent_paper_trades(limit: int = 50):
                 "strategy": r[11] if len(r) > 11 else "V1",
                 "sold_tier2": bool(r[12]),
                 "sold_tier2_sol": r[13],
+                "sold_tier3": bool(r[16]),
+                "sold_tier3_sol": r[17],
                 "buy_reason": r[14] or "",
                 "buy_source": r[15] or "",
             })
