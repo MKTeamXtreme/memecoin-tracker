@@ -383,6 +383,19 @@ function renderStats(s) {
       }
     }
 
+    const elApexLive = document.getElementById('s-paper-apex-live');
+    if (elApexLive) {
+      const apexClosed = s.paper.apex_closed || 0;
+      const liveEst = s.paper.apex_live_est_sol || 0.0;
+      if (apexClosed > 0) {
+        elApexLive.textContent = `Est. Live @0.10: ${liveEst > 0 ? '+' : ''}${liveEst.toFixed(4)} SOL`;
+        elApexLive.style.color = liveEst >= 0 ? 'var(--success)' : 'var(--danger)';
+      } else {
+        elApexLive.textContent = 'Est. Live @0.10: —';
+        elApexLive.style.color = 'var(--text-muted)';
+      }
+    }
+
     const elV5 = document.getElementById('s-paper-pnl-v5');
     if (elV5) {
       elV5.textContent = `V5: ${v5Profit > 0 ? '+' : ''}${v5Profit.toFixed(2)} SOL`;
@@ -603,12 +616,13 @@ function renderPaperTable(trades) {
         <th>Half Sold?</th>
         <th>Exit MC</th>
         <th>Net Profit</th>
+        <th title="Estimated net PnL at 0.10 SOL/trade after ~2% buy + ~2% sell fees/slippage + 0.0004 SOL/tx priority gas">Est. Live @0.10</th>
       </tr>`;
   }
 
   const tbody = document.getElementById('history-body');
   if (!trades || trades.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:24px;color:var(--text-muted)">No paper trades yet...</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:24px;color:var(--text-muted)">No paper trades yet...</td></tr>`;
     return;
   }
 
@@ -653,6 +667,7 @@ function renderPaperTable(trades) {
         <td>${halfSoldBadge}</td>
         <td>${exit}</td>
         <td style="color:${profitColor}; font-weight:bold">${profitText} SOL</td>
+        <td style="color:${(t.live_est_sol || 0) > 0 ? 'var(--success)' : ((t.live_est_sol || 0) < 0 ? 'var(--danger)' : 'var(--text-muted)')}; font-weight:600">${(t.live_est_sol || 0) > 0 ? '+' : ''}${(t.live_est_sol || 0).toFixed(4)} SOL</td>
       </tr>
     `;
   }).join('');

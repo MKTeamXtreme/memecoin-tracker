@@ -188,13 +188,39 @@ def update_paper_trade(mint: str, current_mc: float, elapsed_secs: float, from_m
     finally:
         conn.close()
 
+def estimate_live_net_sol(
+    invested_sol: float,
+    profit_sol: float,
+    sold_half: bool,
+    sold_tier2: bool,
+    live_size: float = 0.10,
+) -> float:
+    """
+    Estimate realistic live mainnet net profit (SOL) at `live_size` (default 0.10 SOL/trade)
+    after:
+      - 2.0% entry cost (1.0% Pump.fun fee + 1.0% slippage)
+      - 2.0% exit cost  (1.0% Pump.fun fee + 1.0% slippage)
+      - 0.0004 SOL priority gas per transaction (2 txs on stop/rug, 3 on T1, 4 on T1+T2)
+      (assumes empty SPL ATA rent 0.00204 SOL is auto-reclaimed on close).
+    """
+    inv = float(invested_sol or 0.0)
+    if inv <= 0:
+        return 0.0
+    scale = live_size / inv
+    gross_returned = max(0.0, (inv + float(profit_sol or 0.0)) * scale)
+    tx_count = 4 if sold_tier2 else (3 if sold_half else 2)
+    var_fees = 0.02 * live_size + 0.02 * gross_returned
+    gas_fees = tx_count * 0.0004
+    return gross_returned - live_size - var_fees - gas_fees
+
+
 def get_paper_stats():
     conn = get_connection()
     try:
         try:
             total = conn.execute("SELECT COUNT(*) FROM paper_trades").fetchone()[0]
         except sqlite3.OperationalError:
-            return {"total_trades": 0, "open_trades": 0, "closed_trades": 0, "net_profit_sol": 0.0, "v1_profit_sol": 0.0, "v2_profit_sol": 0.0, "v3_profit_sol": 0.0, "v4_profit_sol": 0.0, "v5_profit_sol": 0.0, "v5_closed": 0, "v5_wins": 0, "apex_profit_sol": 0.0, "apex_closed": 0, "apex_wins": 0}
+            return {"total_trades": 0, "open_trades": 0, "closed_trades": 0, "net_profit_sol": 0.0, "v1_profit_sol": 0.0, "v2_profit_sol": 0.0, "v3_profit_sol": 0.0, "v4_profit_sol": 0.0, "v5_profit_sol": 0.0, "v5_closed": 0, "v5_wins": 0, "apex_profit_sol": 0.0, "apex_closed": 0, "apex_wins": 0, "apex_live_est_sol": 0.0}
 
         open_trades   = conn.execute("SELECT COUNT(*) FROM paper_trades WHERE status = 'OPEN'").fetchone()[0]
         closed_trades = conn.execute("SELECT COUNT(*) FROM paper_trades WHERE status = 'CLOSED'").fetchone()[0]
@@ -210,6 +236,13 @@ def get_paper_stats():
             apex_profit = conn.execute("SELECT SUM(profit_sol) FROM paper_trades WHERE strategy = 'APEX'").fetchone()[0] or 0.0
             apex_closed = conn.execute("SELECT COUNT(*) FROM paper_trades WHERE strategy = 'APEX' AND status = 'CLOSED'").fetchone()[0] or 0
             apex_wins   = conn.execute("SELECT COUNT(*) FROM paper_trades WHERE strategy = 'APEX' AND status = 'CLOSED' AND profit_sol > 0").fetchone()[0] or 0
+            apex_rows = conn.execute(
+                "SELECT invested_sol, profit_sol, sold_half, COALESCE(sold_tier2, 0) FROM paper_trades WHERE strategy = 'APEX' AND status = 'CLOSED'"
+            ).fetchall()
+            apex_live_est = sum(
+                estimate_live_net_sol(r[0], r[1], bool(r[2]), bool(r[3]), live_size=0.10)
+                for r in apex_rows
+            )
             profit = conn.execute("SELECT SUM(profit_sol) FROM paper_trades").fetchone()[0] or 0.0
         except sqlite3.OperationalError:
             v1_profit = 0.0
@@ -222,6 +255,7 @@ def get_paper_stats():
             apex_profit = 0.0
             apex_closed = 0
             apex_wins = 0
+            apex_live_est = 0.0
             profit = 0.0
 
         return {
@@ -238,7 +272,8 @@ def get_paper_stats():
             "v5_wins": v5_wins,
             "apex_profit_sol": round(apex_profit, 4),
             "apex_closed": apex_closed,
-            "apex_wins": apex_wins
+            "apex_wins": apex_wins,
+            "apex_live_est_sol": round(apex_live_est, 4)
         }
     finally:
         conn.close()
@@ -264,6 +299,7 @@ def get_recent_paper_trades(limit: int = 50):
             if r[10]:
                 is_news = "trend_bonus" in r[10] or "NEWS/HYPE MATCH" in r[10]
 
+            live_est = estimate_live_net_sol(r[3], r[6] or 0.0, bool(r[4]), bool(r[12]), live_size=0.10)
             trades.append({
                 "mint": r[0],
                 "name": r[1],
@@ -272,6 +308,7 @@ def get_recent_paper_trades(limit: int = 50):
                 "sold_half": bool(r[4]),
                 "sold_half_sol": r[5],
                 "profit_sol": r[6] or 0.0,
+                "live_est_sol": round(live_est, 4),
                 "status": r[7],
                 "created_at": r[8],
                 "exit_mc": r[9],
