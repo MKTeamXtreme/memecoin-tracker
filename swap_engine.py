@@ -24,9 +24,12 @@ import asyncio
 import base64
 import logging
 import os
+import random
+import struct
 import time
 from dataclasses import dataclass
 from typing import Optional, Tuple, List
+from urllib.parse import parse_qs, urlparse
 
 import aiohttp
 
@@ -36,10 +39,28 @@ log = logging.getLogger("swap_engine")
 PUMPPORTAL_LOCAL_URL = "https://pumpportal.fun/api/trade-local"
 JUPITER_QUOTE_V1     = "https://api.jup.ag/swap/v1/quote"
 JUPITER_SWAP_V1      = "https://api.jup.ag/swap/v1/swap"
+PUBLIC_SOLANA_RPC    = "https://api.mainnet-beta.solana.com"
+HELIUS_SENDER_BASE   = "https://sender.helius-rpc.com/fast"
 
 SOL_MINT             = "So11111111111111111111111111111111111111112"
+SYSTEM_PROGRAM_ID    = "11111111111111111111111111111111"
 TOKEN_PROGRAM_ID     = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 TOKEN_2022_PROGRAM   = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+
+# Official Helius Sender Tip Accounts (SWQoS-only min tip = 5,000 lamports = 0.000005 SOL; zero API credits!)
+HELIUS_TIP_ACCOUNTS = [
+    "4ACfpUFoaSD9bfPdeu6DBt89gB6ENTeHBXCAi87NhDEE",
+    "D2L6yPZ2FmmmTKPgzaMKdhu6EWZcTpLy1Vhx8uvZe7NZ",
+    "9bnz4RShgq1hAnLnZbP8kbgBg1kEmcJBYQq3gQbmnSta",
+    "5VY91ws6B2hMmBFRsXkoAAdsPHBJwRfBht4DXox3xkwn",
+    "2nyhqdwKcJZR2vcqCyrYsaPVdAnFoJjiksCXJ7hfEYgD",
+    "2q5pghRs6arqVjRvT5gfgWfWcHWmw1ZuCzphgd5KfWGJ",
+    "wyvPkWjVZz1M8fHQnMMCDTQDbkManefNNhweYk5WkcF",
+    "3KCKozbAaF75qEU33jtzozcJ29yJuaLJTy2jFdzUY8bT",
+    "4vieeGHPYPG2MmyPRcYjdiDmmhN3ww7hsFNap8pVN3Ey",
+    "4TQLFNWK8AovT1gFvda5jfw2oJeRMKEmw7aH6MGBJ3or",
+]
+HELIUS_SWQOS_TIP_LAMPORTS = 10_000   # 0.00001 SOL (~$0.0007) -> unlocks staked SWQoS leader routing!
 
 # Hard safety limits (can be tightened via .env, never exceeded above MAX_TRADE_SOL_HARD_CAP)
 MAX_TRADE_SOL_HARD_CAP = 0.50
@@ -160,12 +181,107 @@ def load_swap_config(default_rpc: str = "") -> SwapConfig:
     )
 
 
-# ── LOCAL VERSIONED TRANSACTION SIGNING ───────────────────────────────────────
-def sign_versioned_tx_bytes(raw_unsigned_tx: bytes, private_key_b58: str) -> bytes:
+# ── HELIUS SENDER URL + LOCAL VERSIONED TX TIP INJECTION & SIGNING ───────────
+def _helius_sender_url(rpc_url: str) -> str:
+    """Build Helius Sender SWQoS URL (zero API credits, staked validator routing)."""
+    try:
+        qs = parse_qs(urlparse(rpc_url).query)
+        api_key = (qs.get("api-key") or [""])[0].strip()
+        if api_key:
+            return f"{HELIUS_SENDER_BASE}?swqos_only=true&api-key={api_key}"
+    except Exception:
+        pass
+    return f"{HELIUS_SENDER_BASE}?swqos_only=true"
+
+
+def _inject_tip_into_v0_message(msg, payer_idx: int, tip_pubkey_str: str, tip_lamports: int):
     """
-    Deserialize a Solana VersionedTransaction (legacy or v0), sign its exact versioned
-    message bytes locally using solders, populate signatures at the payer slot, and
-    return signed transaction bytes ready for RPC broadcast.
+    Append a SystemProgram::Transfer tip instruction to a compiled MessageV0 while
+    preserving all existing Address Lookup Table (ALT) indices and accounts.
+    """
+    from solders.instruction import CompiledInstruction
+    from solders.message import MessageHeader, MessageV0
+    from solders.pubkey import Pubkey
+
+    if not isinstance(msg, MessageV0) or tip_lamports <= 0:
+        return msg
+
+    hdr = msg.header
+    keys = list(msg.account_keys)
+    n_ro_unsig = hdr.num_readonly_unsigned_accounts
+    tip_pk = Pubkey.from_string(tip_pubkey_str)
+    sys_pk = Pubkey.from_string(SYSTEM_PROGRAM_ID)
+
+    if tip_pk in keys:
+        tip_idx = keys.index(tip_pk)
+        new_ixs = list(msg.instructions)
+    else:
+        insert_idx = len(keys) - n_ro_unsig
+        keys.insert(insert_idx, tip_pk)
+        tip_idx = insert_idx
+
+        def _remap(idx: int) -> int:
+            return idx + 1 if idx >= insert_idx else idx
+
+        new_ixs = [
+            CompiledInstruction(
+                program_id_index=_remap(ix.program_id_index),
+                accounts=bytes(_remap(a) for a in ix.accounts),
+                data=bytes(ix.data),
+            )
+            for ix in msg.instructions
+        ]
+
+    # Locate or append SystemProgram (readonly unsigned)
+    sys_idx = None
+    for i, k in enumerate(keys):
+        if k == sys_pk:
+            sys_idx = i
+            break
+    if sys_idx is None:
+        alt_start = len(keys)
+        keys.append(sys_pk)
+        sys_idx = alt_start
+        n_ro_unsig += 1
+        new_ixs = [
+            CompiledInstruction(
+                program_id_index=(ix.program_id_index + 1 if ix.program_id_index >= alt_start else ix.program_id_index),
+                accounts=bytes((a + 1 if a >= alt_start else a) for a in ix.accounts),
+                data=bytes(ix.data),
+            )
+            for ix in new_ixs
+        ]
+
+    tip_data = struct.pack("<IQ", 2, int(tip_lamports))
+    new_ixs.append(CompiledInstruction(
+        program_id_index=sys_idx,
+        accounts=bytes([payer_idx, tip_idx]),
+        data=tip_data,
+    ))
+
+    new_hdr = MessageHeader(
+        num_required_signatures=hdr.num_required_signatures,
+        num_readonly_signed_accounts=hdr.num_readonly_signed_accounts,
+        num_readonly_unsigned_accounts=n_ro_unsig,
+    )
+    return MessageV0(
+        header=new_hdr,
+        account_keys=keys,
+        recent_blockhash=msg.recent_blockhash,
+        instructions=new_ixs,
+        address_table_lookups=list(msg.address_table_lookups),
+    )
+
+
+def sign_versioned_tx_bytes(
+    raw_unsigned_tx: bytes,
+    private_key_b58: str,
+    helius_tip_lamports: int = HELIUS_SWQOS_TIP_LAMPORTS,
+) -> bytes:
+    """
+    Deserialize a Solana VersionedTransaction (legacy or v0), optionally inject a tiny
+    Helius Sender SWQoS tip (0.00001 SOL) so staked leader routing accepts it, sign its
+    exact versioned message bytes locally using solders, and return broadcastable bytes.
     """
     from solders.keypair import Keypair
     from solders.message import to_bytes_versioned
@@ -174,10 +290,7 @@ def sign_versioned_tx_bytes(raw_unsigned_tx: bytes, private_key_b58: str) -> byt
     kp = Keypair.from_base58_string(private_key_b58.strip())
     tx = VersionedTransaction.from_bytes(raw_unsigned_tx)
     msg = tx.message
-    sig = kp.sign_message(to_bytes_versioned(msg))
 
-    # Preserve any additional pre-signed signatures (e.g. if a router attached a signer)
-    existing_sigs = list(tx.signatures)
     account_keys = list(msg.account_keys)
     payer_idx = 0
     for idx, ak in enumerate(account_keys):
@@ -185,6 +298,15 @@ def sign_versioned_tx_bytes(raw_unsigned_tx: bytes, private_key_b58: str) -> byt
             payer_idx = idx
             break
 
+    # Inject Helius SWQoS tip when only our wallet needs to sign (preserves multi-signer txs untouched)
+    existing_sigs = list(tx.signatures)
+    if helius_tip_lamports > 0 and msg.header.num_required_signatures == 1:
+        try:
+            msg = _inject_tip_into_v0_message(msg, payer_idx, random.choice(HELIUS_TIP_ACCOUNTS), helius_tip_lamports)
+        except Exception as e:
+            log.warning(f"Could not inject Helius SWQoS tip (signing original tx): {e}")
+
+    sig = kp.sign_message(to_bytes_versioned(msg))
     if existing_sigs and payer_idx < len(existing_sigs):
         existing_sigs[payer_idx] = sig
         signed = VersionedTransaction.populate(msg, existing_sigs)
@@ -272,41 +394,83 @@ async def get_all_empty_token_accounts(
     return empty
 
 
+async def _broadcast_once(
+    session: aiohttp.ClientSession,
+    endpoints: List[Tuple[str, str]],
+    b64_tx: str,
+) -> Tuple[Optional[str], List[str], List[str]]:
+    """Broadcast base64 tx in parallel across Helius Sender SWQoS + RPCs."""
+    send_params = [b64_tx, {"encoding": "base64", "skipPreflight": True, "preflightCommitment": "processed", "maxRetries": 0}]
+
+    async def _hit(name: str, url: str):
+        try:
+            res = await _rpc_call(session, url, "sendTransaction", send_params, timeout_s=6.0)
+            return name, str(res) if res else None, ""
+        except Exception as e:
+            return name, None, str(e)[:120]
+
+    results = await asyncio.gather(*(_hit(n, u) for n, u in endpoints), return_exceptions=False)
+    sig = None
+    accepted, errors = [], []
+    for name, s, err in results:
+        if s:
+            if sig is None:
+                sig = s
+            accepted.append(name)
+        else:
+            errors.append(f"{name}:{err}")
+    return sig, accepted, errors
+
+
 async def send_and_confirm_tx(
     session: aiohttp.ClientSession,
     rpc_url: str,
     signed_tx_bytes: bytes,
-    confirm_timeout_s: float = 28.0,
+    confirm_timeout_s: float = 16.0,
 ) -> Tuple[bool, Optional[str], str]:
     """
-    Broadcast signed transaction to Solana RPC and poll until confirmed/finalized.
-    Returns (confirmed_ok, signature, error_msg).
+    Broadcast signed transaction in parallel via Helius Sender SWQoS (staked validator path)
+    + Helius RPC + Solana Mainnet RPC, rebroadcasting every ~1.6s until confirmed.
+    Runs a quick simulation check at ~5.5s if unconfirmed so fatal errors (e.g. BondingCurveComplete
+    or SlippageExceeded) fail over immediately instead of waiting out the full timeout.
     """
+    from solders.transaction import VersionedTransaction
+
     b64_tx = base64.b64encode(signed_tx_bytes).decode("ascii")
     try:
-        sig = await _rpc_call(
-            session,
-            rpc_url,
-            "sendTransaction",
-            [b64_tx, {"encoding": "base64", "skipPreflight": True, "preflightCommitment": "processed", "maxRetries": 3}],
-            timeout_s=12.0,
-        )
-    except Exception as e:
-        return False, None, f"sendTransaction failed: {e}"
+        local_sig = str(VersionedTransaction.from_bytes(signed_tx_bytes).signatures[0])
+    except Exception:
+        local_sig = None
 
+    sender_url = _helius_sender_url(rpc_url)
+    endpoints = [
+        ("HeliusSender-SWQoS", sender_url),
+        ("HeliusRPC", rpc_url),
+        ("SolanaPublic", PUBLIC_SOLANA_RPC),
+    ]
+
+    sig, accepted, errs = await _broadcast_once(session, endpoints, b64_tx)
     if not sig:
-        return False, None, "RPC returned empty signature"
+        return False, local_sig, f"All broadcast endpoints rejected tx: {'; '.join(errs)}"
+    log.info(f"[TX SENT] {sig[:14]}.. via {', '.join(accepted)}" + (f" (skipped: {'; '.join(errs)})" if errs else ""))
 
-    deadline = time.time() + confirm_timeout_s
+    start = time.time()
+    deadline = start + confirm_timeout_s
+    tick = 0
+    sim_checked = False
+
     while time.time() < deadline:
-        await asyncio.sleep(0.9)
+        await asyncio.sleep(0.8)
+        tick += 1
+
+        # 1. Check on-chain confirmation status
         try:
             st = await _rpc_call(
                 session,
                 rpc_url,
                 "getSignatureStatuses",
                 [[sig], {"searchTransactionHistory": True}],
-                timeout_s=8.0,
+                timeout_s=6.0,
             )
             val = ((st or {}).get("value") or [None])[0]
             if val is not None:
@@ -317,6 +481,29 @@ async def send_and_confirm_tx(
                     return True, sig, ""
         except Exception:
             pass
+
+        # 2. At ~5.5s, check simulation once so fatal program errors fail over immediately
+        if not sim_checked and (time.time() - start) >= 5.5:
+            sim_checked = True
+            try:
+                sim = await _rpc_call(
+                    session,
+                    rpc_url,
+                    "simulateTransaction",
+                    [b64_tx, {"encoding": "base64", "sigVerify": False, "commitment": "processed"}],
+                    timeout_s=6.0,
+                )
+                sim_val = (sim or {}).get("value") or {}
+                sim_err = sim_val.get("err")
+                if sim_err is not None and sim_err != "AlreadyProcessed":
+                    logs_tail = " | ".join((sim_val.get("logs") or [])[-3:])
+                    return False, sig, f"Sim failed ({sim_err}): {logs_tail[:180]}"
+            except Exception:
+                pass
+
+        # 3. Rebroadcast every ~1.6s through Helius Sender SWQoS + Helius RPC
+        if tick % 2 == 0:
+            await _broadcast_once(session, endpoints[:2], b64_tx)
 
     return False, sig, f"Confirmation timed out after {confirm_timeout_s:.0f}s"
 
@@ -630,35 +817,44 @@ def build_close_ata_tx_bytes(
     private_key_b58: str,
 ) -> bytes:
     """
-    Build & sign a VersionedTransaction containing an SPL Token / Token-2022 CloseAccount
-    instruction (opcode 9 — identical in both Tokenkeg and Token-2022) to reclaim ~0.00204 SOL rent.
+    Build & sign a VersionedTransaction containing ComputeBudget priority fee + Helius SWQoS
+    micro-tip (0.00001 SOL) + SPL Token / Token-2022 CloseAccount instruction (opcode 9)
+    to reliably reclaim ~0.00204 SOL rent via Helius Sender SWQoS.
     """
+    from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
     from solders.hash import Hash
     from solders.instruction import AccountMeta, Instruction
     from solders.keypair import Keypair
     from solders.message import MessageV0, to_bytes_versioned
     from solders.pubkey import Pubkey
+    from solders.system_program import TransferParams, transfer
     from solders.transaction import VersionedTransaction
 
     kp = Keypair.from_base58_string(private_key_b58.strip())
     owner_pk = kp.pubkey()
     ata_pk = Pubkey.from_string(ata_pubkey_str)
     prog_pk = Pubkey.from_string(token_program_id_str)
+    tip_pk = Pubkey.from_string(random.choice(HELIUS_TIP_ACCOUNTS))
     bh = Hash.from_string(recent_blockhash_str)
 
-    # SPL Token / Token-2022 CloseAccount instruction index = 9
-    close_ix = Instruction(
-        program_id=prog_pk,
-        accounts=[
-            AccountMeta(pubkey=ata_pk,   is_signer=False, is_writable=True),
-            AccountMeta(pubkey=owner_pk, is_signer=False, is_writable=True),
-            AccountMeta(pubkey=owner_pk, is_signer=True,  is_writable=False),
-        ],
-        data=bytes([9]),
-    )
+    # Compute priority + Helius SWQoS micro-tip + SPL Token / Token-2022 CloseAccount (opcode 9)
+    ixs = [
+        set_compute_unit_limit(30_000),
+        set_compute_unit_price(100_000),
+        transfer(TransferParams(from_pubkey=owner_pk, to_pubkey=tip_pk, lamports=HELIUS_SWQOS_TIP_LAMPORTS)),
+        Instruction(
+            program_id=prog_pk,
+            accounts=[
+                AccountMeta(pubkey=ata_pk,   is_signer=False, is_writable=True),
+                AccountMeta(pubkey=owner_pk, is_signer=False, is_writable=True),
+                AccountMeta(pubkey=owner_pk, is_signer=True,  is_writable=False),
+            ],
+            data=bytes([9]),
+        ),
+    ]
     msg = MessageV0.try_compile(
         payer=owner_pk,
-        instructions=[close_ix],
+        instructions=ixs,
         address_lookup_table_accounts=[],
         recent_blockhash=bh,
     )
