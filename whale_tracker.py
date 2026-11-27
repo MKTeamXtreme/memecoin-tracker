@@ -40,7 +40,7 @@ STABLE_AND_BASE_MINTS: Set[str] = {
 MIN_SOL_SPENT         = 0.15    # Require >= 0.15 SOL real buy (skips dust / spam)
 CONFLUENCE_WINDOW_SEC = 300     # 5-minute window to detect 2+ smart wallets entering the same coin
 REQUIRE_CONFLUENCE    = False   # If True, only trade when >=2 tracked wallets buy; if False, 1 wallet buys sub-$14k Pump.fun coins
-POLL_CYCLE_SLEEP      = 1.2     # Delay between individual wallet polls (keeps Helius usage tiny)
+POLL_CYCLE_SLEEP      = 2.0     # Delay between individual wallet polls (4s cycle for 2 wallets -> 75% fewer Helius calls + healthy rug buffer)
 
 # State
 _last_sig_by_wallet: Dict[str, Optional[str]] = {}
