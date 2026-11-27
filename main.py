@@ -485,7 +485,8 @@ async def lifespan(app: FastAPI):
         print(f"[Boot] AutoTrader started in {mode} mode ({TRADE_AMOUNT_SOL} SOL per trade) | Live Swap Engine: STANDBY")
     else:
         pk = SWAP_CFG.wallet_pubkey
-        print(f"[Boot] AutoTrader started in {mode} mode ({TRADE_AMOUNT_SOL} SOL/trade | Wallet {pk[:6]}..{pk[-4:]} | Router={SWAP_CFG.router_mode})")
+        cap_txt = f" | SmokeCap={SWAP_CFG.live_smoke_max_trades}" if SWAP_CFG.live_smoke_max_trades > 0 else ""
+        print(f"[Boot] AutoTrader started in {mode} mode ({TRADE_AMOUNT_SOL} SOL/trade | MaxOpen={SWAP_CFG.live_max_open_trades}{cap_txt} | Wallet {pk[:6]}..{pk[-4:]} | Router={SWAP_CFG.router_mode})")
     print("[Boot] PumpPortal real-time WebSocket + Meta-Cluster Radar + TreeNews <1s WS started")
     print("[Boot] Background tasks started")
     print("[Boot] Open http://localhost:8000 in your browser")

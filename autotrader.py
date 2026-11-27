@@ -57,7 +57,7 @@ TRAILING_STOP_PCT= 0.28          # Trailing stop loss for moonbag/remainder (28%
 MOONBAG_EXIT_HRS = 24            # Sell moonbag after this many hours
 MIN_1MIN_MULT    = 1.16          # Min 45s staircase mult from discovery (+16%)
 MAX_1MIN_MULT    = 1.54          # Max 45s staircase mult from discovery (+54% cap: filters vertical blow-off tops)
-MAX_OPEN_TRADES  = 4             # Max concurrent active (un-banked) trades for bankroll safety
+MAX_OPEN_TRADES  = 4 if PAPER_MODE else SWAP_CFG.live_max_open_trades  # 4 in paper, LIVE_MAX_OPEN_TRADES (default 2) in live
 POLL_SECS        = 3             # How often to check open trade prices (seconds)
 MAX_LIVE_EXIT_FAILS = 6          # Close dead/illiquid live trade locally after N failed exit attempts
 
@@ -102,6 +102,8 @@ class Trade:
 
 open_trades: Dict[str, Trade] = {}
 closed_trades: list = []
+_in_flight_buys: set[str] = set()   # Prevents async race where 2 signals fire before first RPC buy finishes
+_live_session_buys: int = 0         # Counts confirmed live buys this session for LIVE_SMOKE_MAX_TRADES fuse
 
 
 # ── PRICE FETCHER ─────────────────────────────────────────────────────────────
@@ -188,7 +190,7 @@ def _check_daily_loss_breaker() -> tuple[bool, str]:
         conn = get_connection()
         since = time.time() - 86400
         daily_pnl = conn.execute(
-            "SELECT COALESCE(SUM(profit_sol), 0) FROM paper_trades WHERE strategy = 'APEX' AND status = 'CLOSED' AND created_at >= ?",
+            "SELECT COALESCE(SUM(profit_sol), 0) FROM paper_trades WHERE strategy = 'APEX' AND status = 'CLOSED' AND buy_reason LIKE '%LIVE tx:%' AND created_at >= ?",
             (since,),
         ).fetchone()[0] or 0.0
         conn.close()
@@ -387,13 +389,23 @@ async def buy_coin(
     buy_reason: str = "",
     buy_source: str = "STAIRCASE",
 ):
+    global _live_session_buys
     _prune_closed_open_trades()
-    if mint in open_trades:
-        return  # already in this trade
+    if mint in open_trades or mint in _in_flight_buys:
+        return  # already in this trade or currently executing buy
 
-    # Cap concurrent active (un-banked) trades for bankroll safety (do not liquidate risk-free moonbags!)
+    # Optional smoke-test fuse: stop opening new live buys after LIVE_SMOKE_MAX_TRADES (still exits open trades)
+    if not PAPER_MODE and SWAP_CFG.live_smoke_max_trades > 0:
+        if (_live_session_buys + len(_in_flight_buys)) >= SWAP_CFG.live_smoke_max_trades:
+            log.info(
+                f"SMOKE TEST CAP REACHED ({_live_session_buys}/{SWAP_CFG.live_smoke_max_trades} live trades) | "
+                f"Skipping {name} — check Solscan fills, then set LIVE_SMOKE_MAX_TRADES=0 when ready."
+            )
+            return
+
+    # Cap concurrent active (un-banked) trades + in-flight buys (prevents async race condition!)
     active_at_risk = [t for t in open_trades.values() if not t.half_sold and not t.closed]
-    if len(active_at_risk) >= MAX_OPEN_TRADES:
+    if (len(active_at_risk) + len(_in_flight_buys)) >= MAX_OPEN_TRADES:
         log.warning(f"MAX ACTIVE TRADES ({MAX_OPEN_TRADES}) REACHED | Skipping {name} to preserve cashflow.")
         return
 
@@ -403,47 +415,57 @@ async def buy_coin(
             log.warning(f"DAILY LOSS BREAKER | Skipping {name} | {breaker_msg}")
             return
 
-    is_rug, rug_msg = await check_rug_risk(mint, expected_mc=entry_mc)
-    if is_rug:
-        log.warning(f"RUG PREVENTED | {name} | {rug_msg} - Aborting buy.")
-        return
-
-    is_bad_creator, creator_msg = await check_creator_risk(session, mint, SOLANA_RPC)
-    if is_bad_creator:
-        log.warning(f"SERIAL RUGGER BLOCKED | {name} | {creator_msg} - Aborting buy.")
-        return
-
-    bp_ok, bp_msg = await check_buy_pressure(session, mint)
-    if not bp_ok:
-        log.warning(f"SELL PRESSURE BLOCKED | {name} | {bp_msg} - Aborting buy.")
-        return
-
-    details = [p for p in [buy_reason, rug_msg, bp_msg if bp_msg != "OK" else ""] if p]
-    full_reason = " | ".join(details)
-
-    invest_amt = TRADE_AMOUNT_SOL
-    news_tag = f" [{buy_source}]" if buy_source else ""
-    log.info(f"BUY | {name} | MC ${entry_mc/1000:.1f}k | {invest_amt} SOL{news_tag} | Why: {full_reason} {'[PAPER]' if PAPER_MODE else '[LIVE]'}")
-
-    if not PAPER_MODE:
-        cfg = _active_swap_cfg(wallet_pubkey, private_key_b58)
-        res = await buy_token_live(session, cfg, mint, invest_amt)
-        if not res.ok:
-            log.error(f"LIVE BUY FAILED | {name} | {res.error}")
+    _in_flight_buys.add(mint)
+    try:
+        is_rug, rug_msg = await check_rug_risk(mint, expected_mc=entry_mc)
+        if is_rug:
+            log.warning(f"RUG PREVENTED | {name} | {rug_msg} - Aborting buy.")
             return
-        if res.sol_delta is not None and res.sol_delta < 0:
-            invest_amt = round(abs(res.sol_delta), 6)
-        full_reason = f"{full_reason} | LIVE tx:{(res.signature or '')[:8]}.. ({res.router})"
 
-    from paper import open_paper_trade
-    open_paper_trade(mint, entry_mc, invest_amt, strategy="APEX", buy_reason=full_reason, buy_source=buy_source)
+        is_bad_creator, creator_msg = await check_creator_risk(session, mint, SOLANA_RPC)
+        if is_bad_creator:
+            log.warning(f"SERIAL RUGGER BLOCKED | {name} | {creator_msg} - Aborting buy.")
+            return
 
-    open_trades[mint] = Trade(
-        is_news_match=is_news_match,
-        sol_invested=invest_amt,
-        mint=mint, name=name,
-        entry_mc=entry_mc
-    )
+        bp_ok, bp_msg = await check_buy_pressure(session, mint)
+        if not bp_ok:
+            log.warning(f"SELL PRESSURE BLOCKED | {name} | {bp_msg} - Aborting buy.")
+            return
+
+        details = [p for p in [buy_reason, rug_msg, bp_msg if bp_msg != "OK" else ""] if p]
+        full_reason = " | ".join(details)
+
+        invest_amt = TRADE_AMOUNT_SOL
+        news_tag = f" [{buy_source}]" if buy_source else ""
+        log.info(f"BUY | {name} | MC ${entry_mc/1000:.1f}k | {invest_amt} SOL{news_tag} | Why: {full_reason} {'[PAPER]' if PAPER_MODE else '[LIVE]'}")
+
+        actual_entry_mc = entry_mc
+        if not PAPER_MODE:
+            cfg = _active_swap_cfg(wallet_pubkey, private_key_b58)
+            res = await buy_token_live(session, cfg, mint, invest_amt)
+            if not res.ok:
+                log.error(f"LIVE BUY FAILED | {name} | {res.error}")
+                return
+            _live_session_buys += 1
+            if res.sol_delta is not None and res.sol_delta < 0:
+                invest_amt = round(abs(res.sol_delta), 6)
+            # Re-read live on-chain MC right after fill confirmation so T1/SL track actual fill price
+            post_mc = await fetch_current_mc(session, mint)
+            if post_mc and post_mc > 0:
+                actual_entry_mc = post_mc
+            full_reason = f"{full_reason} | LIVE tx:{(res.signature or '')[:8]}.. ({res.router})"
+
+        from paper import open_paper_trade
+        open_paper_trade(mint, actual_entry_mc, invest_amt, strategy="APEX", buy_reason=full_reason, buy_source=buy_source)
+
+        open_trades[mint] = Trade(
+            is_news_match=is_news_match,
+            sol_invested=invest_amt,
+            mint=mint, name=name,
+            entry_mc=actual_entry_mc
+        )
+    finally:
+        _in_flight_buys.discard(mint)
 
 
 # ── SELL ──────────────────────────────────────────────────────────────────────

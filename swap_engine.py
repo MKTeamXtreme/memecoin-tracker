@@ -54,6 +54,8 @@ class SwapConfig:
     rpc_url: str                 = "https://mainnet.helius-rpc.com/?api-key=87eeee41-3eb7-499f-9fad-0c242d9be5bf"
     jupiter_api_key: str         = ""
     live_trade_sol: float        = 0.10
+    live_max_open_trades: int    = 2
+    live_smoke_max_trades: int   = 0        # 0 = unlimited; >0 stops opening new live buys after N trades this session
     min_wallet_reserve_sol: float = 0.05
     daily_max_loss_sol: float    = 0.40
     buy_slippage_pct: float      = 8.0
@@ -113,6 +115,12 @@ def load_swap_config(default_rpc: str = "") -> SwapConfig:
         except ValueError:
             return default
 
+    def _i(name: str, default: int) -> int:
+        try:
+            return int(os.getenv(name, str(default)))
+        except ValueError:
+            return default
+
     rpc = os.getenv("SOLANA_RPC_URL", "").strip() or default_rpc or SwapConfig.rpc_url
     priv = os.getenv("WALLET_PRIVATE_KEY", "").strip()
     pub = ""
@@ -129,6 +137,8 @@ def load_swap_config(default_rpc: str = "") -> SwapConfig:
         want_live = False
 
     trade_sol = min(MAX_TRADE_SOL_HARD_CAP, max(0.01, _f("LIVE_TRADE_SOL", 0.10)))
+    max_open  = min(4, max(1, _i("LIVE_MAX_OPEN_TRADES", 2)))
+    smoke_cap = max(0, _i("LIVE_SMOKE_MAX_TRADES", 0))
 
     return SwapConfig(
         live_mode=want_live,
@@ -137,6 +147,8 @@ def load_swap_config(default_rpc: str = "") -> SwapConfig:
         rpc_url=rpc,
         jupiter_api_key=os.getenv("JUPITER_API_KEY", "").strip(),
         live_trade_sol=trade_sol,
+        live_max_open_trades=max_open,
+        live_smoke_max_trades=smoke_cap,
         min_wallet_reserve_sol=max(0.02, _f("MIN_WALLET_RESERVE_SOL", 0.05)),
         daily_max_loss_sol=max(0.05, _f("DAILY_MAX_LOSS_SOL", 0.40)),
         buy_slippage_pct=min(50.0, max(1.0, _f("BUY_SLIPPAGE_PCT", 8.0))),
@@ -703,6 +715,7 @@ async def _cli_main(reclaim_all: bool = False):
     print(f"Live mode enabled : {cfg.live_mode} (APEX_LIVE_MODE)")
     print(f"Router mode       : {cfg.router_mode}")
     print(f"Trade size (live) : {cfg.live_trade_sol:.4f} SOL (hard cap {MAX_TRADE_SOL_HARD_CAP} SOL)")
+    print(f"Max open trades   : {cfg.live_max_open_trades} | Smoke-test cap: {cfg.live_smoke_max_trades or 'unlimited'}")
     print(f"Min gas reserve   : {cfg.min_wallet_reserve_sol:.4f} SOL")
     print(f"Daily loss limit  : {cfg.daily_max_loss_sol:.4f} SOL")
     if not cfg.wallet_pubkey:
