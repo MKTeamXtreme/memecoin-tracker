@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from database import init_db, save_coin, get_recent_coins, get_stats, get_biggest_winners
 from paper import init_paper_db, open_paper_trade, get_paper_stats, get_recent_paper_trades
-from autotrader import on_new_coin, monitor_loop, PAPER_MODE, TRADE_AMOUNT_SOL, SOLANA_RPC, check_rug_risk
+from autotrader import on_new_coin, monitor_loop, PAPER_MODE, TRADE_AMOUNT_SOL, SOLANA_RPC, SWAP_CFG, check_rug_risk
 from pumpportal import (
     run_pumpportal_feed,
     IncubatedToken,
@@ -480,8 +480,12 @@ async def lifespan(app: FastAPI):
     news_ws_task = asyncio.create_task(run_news_ws_loop())
     trader_task  = asyncio.create_task(monitor_loop())
     whale_task   = asyncio.create_task(monitor_whale())
-    mode = 'PAPER' if PAPER_MODE else 'LIVE'
-    print(f"[Boot] AutoTrader started in {mode} mode ({TRADE_AMOUNT_SOL} SOL per trade)")
+    mode = 'PAPER' if PAPER_MODE else 'LIVE MAINNET'
+    if PAPER_MODE:
+        print(f"[Boot] AutoTrader started in {mode} mode ({TRADE_AMOUNT_SOL} SOL per trade) | Live Swap Engine: STANDBY")
+    else:
+        pk = SWAP_CFG.wallet_pubkey
+        print(f"[Boot] AutoTrader started in {mode} mode ({TRADE_AMOUNT_SOL} SOL/trade | Wallet {pk[:6]}..{pk[-4:]} | Router={SWAP_CFG.router_mode})")
     print("[Boot] PumpPortal real-time WebSocket + Meta-Cluster Radar + TreeNews <1s WS started")
     print("[Boot] Background tasks started")
     print("[Boot] Open http://localhost:8000 in your browser")

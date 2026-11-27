@@ -24,10 +24,24 @@ import aiohttp
 from paper import update_paper_trade
 from pumpportal import fetch_pump_curve_mc_usd
 from creator_guard import check_creator_risk, record_rugged_coin
+from swap_engine import (
+    SwapConfig,
+    SwapResult,
+    SOL_MINT,
+    load_swap_config,
+    buy_token_live,
+    sell_token_live,
+)
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
-PAPER_MODE       = True          # Set False to trade real SOL
-TRADE_AMOUNT_SOL = 0.02          # SOL per trade
+# Solana RPC (overridable via SOLANA_RPC_URL in .env)
+SOLANA_RPC       = "https://mainnet.helius-rpc.com/?api-key=87eeee41-3eb7-499f-9fad-0c242d9be5bf"
+
+# Load live swap configuration from .env (APEX_LIVE_MODE defaults to false -> safe PAPER_MODE=True)
+SWAP_CFG         = load_swap_config(default_rpc=SOLANA_RPC)
+SOLANA_RPC       = SWAP_CFG.rpc_url
+PAPER_MODE       = not SWAP_CFG.live_mode   # Stays True unless APEX_LIVE_MODE=true + valid WALLET_PRIVATE_KEY in .env
+TRADE_AMOUNT_SOL = 0.02 if PAPER_MODE else SWAP_CFG.live_trade_sol  # 0.02 SOL in paper mode, LIVE_TRADE_SOL (default 0.10) when live
 TIER1_SELL_AT    = 1.40          # Tier 1: Sell 50% at 1.40x (banks 0.70x principal & raises floor to 0.95x)
 TIER2_SELL_AT    = 1.75          # Tier 2: Sell 35% at 1.75x (banks +0.6125x -> 1.3125x locked + 15% remaining)
 TIER3_SELL_AT    = 2.50          # Tier 3: Sell 10% at 2.50x (banks +0.25x -> 1.5625x locked + 5% Moonbag!)
@@ -43,19 +57,11 @@ TRAILING_STOP_PCT= 0.28          # Trailing stop loss for moonbag/remainder (28%
 MOONBAG_EXIT_HRS = 24            # Sell moonbag after this many hours
 MIN_1MIN_MULT    = 1.16          # Min 45s staircase mult from discovery (+16%)
 MAX_1MIN_MULT    = 1.54          # Max 45s staircase mult from discovery (+54% cap: filters vertical blow-off tops)
-MAX_OPEN_TRADES  = 4             # Max concurrent active (un-banked) trades for 0.2 SOL bankroll safety
+MAX_OPEN_TRADES  = 4             # Max concurrent active (un-banked) trades for bankroll safety
 POLL_SECS        = 3             # How often to check open trade prices (seconds)
+MAX_LIVE_EXIT_FAILS = 6          # Close dead/illiquid live trade locally after N failed exit attempts
 
-# Solana RPC (free public endpoint — replace with paid RPC for better reliability)
-SOLANA_RPC       = "https://mainnet.helius-rpc.com/?api-key=87eeee41-3eb7-499f-9fad-0c242d9be5bf"
-
-# Jupiter API
-JUPITER_QUOTE    = "https://quote-api.jup.ag/v6/quote"
-JUPITER_SWAP     = "https://quote-api.jup.ag/v6/swap"
 DEXSCREENER_URL  = "https://api.dexscreener.com/latest/dex/tokens/{}"
-
-# SOL mint address
-SOL_MINT         = "So11111111111111111111111111111111111111112"
 
 # ── LOGGING ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -77,10 +83,14 @@ class Trade:
     half_sold:    bool  = False
     tier2_sold:   bool  = False
     tier3_sold:   bool  = False
+    sold_half_sol:  float = 0.0
+    sold_tier2_sol: float = 0.0
+    sold_tier3_sol: float = 0.0
     peak_mult:    float = 0.0
     sol_returned: float = 0.0
     closed:       bool  = False
     close_reason: str   = ""
+    exit_fail_count: int = 0
 
     @property
     def elapsed_hrs(self) -> float:
@@ -144,69 +154,123 @@ async def check_buy_pressure(session: aiohttp.ClientSession, mint: str) -> tuple
         return True, "OK"
 
 
-# ── JUPITER SWAP EXECUTION ────────────────────────────────────────────────────
+# ── LIVE SWAP ENGINE HELPERS ──────────────────────────────────────────────────
+def _active_swap_cfg(wallet_pubkey: str = "", private_key_b58: str = "") -> SwapConfig:
+    """Return active SwapConfig, honoring explicit key overrides if supplied."""
+    if not private_key_b58:
+        return SWAP_CFG
+    from swap_engine import derive_pubkey
+    pub = wallet_pubkey or derive_pubkey(private_key_b58)
+    return SwapConfig(
+        live_mode=not PAPER_MODE,
+        private_key_b58=private_key_b58,
+        wallet_pubkey=pub,
+        rpc_url=SWAP_CFG.rpc_url,
+        jupiter_api_key=SWAP_CFG.jupiter_api_key,
+        live_trade_sol=SWAP_CFG.live_trade_sol,
+        min_wallet_reserve_sol=SWAP_CFG.min_wallet_reserve_sol,
+        daily_max_loss_sol=SWAP_CFG.daily_max_loss_sol,
+        buy_slippage_pct=SWAP_CFG.buy_slippage_pct,
+        sell_slippage_pct=SWAP_CFG.sell_slippage_pct,
+        emergency_slippage_pct=SWAP_CFG.emergency_slippage_pct,
+        priority_fee_sol=SWAP_CFG.priority_fee_sol,
+        emergency_priority_sol=SWAP_CFG.emergency_priority_sol,
+        router_mode=SWAP_CFG.router_mode,
+    )
+
+
+def _check_daily_loss_breaker() -> tuple[bool, str]:
+    """Pause new LIVE buys if realized APEX losses in the last 24h exceed DAILY_MAX_LOSS_SOL."""
+    if PAPER_MODE:
+        return True, "OK"
+    try:
+        from database import get_connection
+        conn = get_connection()
+        since = time.time() - 86400
+        daily_pnl = conn.execute(
+            "SELECT COALESCE(SUM(profit_sol), 0) FROM paper_trades WHERE strategy = 'APEX' AND status = 'CLOSED' AND created_at >= ?",
+            (since,),
+        ).fetchone()[0] or 0.0
+        conn.close()
+        if daily_pnl <= -SWAP_CFG.daily_max_loss_sol:
+            return False, f"24h realized loss {daily_pnl:+.4f} SOL hit daily breaker (-{SWAP_CFG.daily_max_loss_sol:.2f} SOL)"
+    except Exception as e:
+        log.warning(f"Could not check daily loss breaker: {e}")
+    return True, "OK"
+
+
+def _sync_live_trade_to_db(trade: Trade, current_mc: float, exit_sol_last: float = 0.0) -> None:
+    """Persist actual confirmed LIVE fill state & realized SOL into paper_trades."""
+    try:
+        from database import get_connection
+        conn = get_connection()
+        peak_mc = max(trade.entry_mc * trade.peak_mult, current_mc)
+        mult = current_mc / trade.entry_mc if trade.entry_mc > 0 else 0.0
+        rem_frac = 0.05 if trade.tier3_sold else (0.15 if trade.tier2_sold else (0.50 if trade.half_sold else 1.0))
+        if trade.closed:
+            profit = trade.sol_returned - trade.sol_invested
+            conn.execute(
+                """UPDATE paper_trades
+                   SET sold_half = ?, sold_half_sol = ?,
+                       sold_tier2 = ?, sold_tier2_sol = ?,
+                       sold_tier3 = ?, sold_tier3_sol = ?,
+                       peak_mc = MAX(COALESCE(peak_mc, 0), ?),
+                       exit_mc = ?, exit_sol = ?, profit_sol = ?, status = 'CLOSED'
+                   WHERE mint = ?""",
+                (
+                    1 if trade.half_sold else 0, trade.sold_half_sol,
+                    1 if trade.tier2_sold else 0, trade.sold_tier2_sol,
+                    1 if trade.tier3_sold else 0, trade.sold_tier3_sol,
+                    peak_mc,
+                    current_mc,
+                    exit_sol_last,
+                    profit,
+                    trade.mint,
+                ),
+            )
+        else:
+            mtm_profit = trade.sol_returned + (trade.sol_invested * rem_frac * mult) - trade.sol_invested
+            conn.execute(
+                """UPDATE paper_trades
+                   SET sold_half = ?, sold_half_sol = ?,
+                       sold_tier2 = ?, sold_tier2_sol = ?,
+                       sold_tier3 = ?, sold_tier3_sol = ?,
+                       peak_mc = MAX(COALESCE(peak_mc, 0), ?),
+                       profit_sol = ?
+                   WHERE mint = ?""",
+                (
+                    1 if trade.half_sold else 0, trade.sold_half_sol,
+                    1 if trade.tier2_sold else 0, trade.sold_tier2_sol,
+                    1 if trade.tier3_sold else 0, trade.sold_tier3_sol,
+                    peak_mc,
+                    mtm_profit,
+                    trade.mint,
+                ),
+            )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.error(f"Could not sync live trade {trade.mint[:8]}.. to DB: {e}")
+
+
 async def execute_swap(
     session: aiohttp.ClientSession,
     input_mint: str,
     output_mint: str,
     amount_sol: float,
-    wallet_pubkey: str,
-    private_key_b58: str
+    wallet_pubkey: str = "",
+    private_key_b58: str = "",
 ) -> Optional[str]:
-    """Execute a real swap via Jupiter. Returns tx signature or None."""
+    """Legacy-compatible buy wrapper backed by swap_engine (PumpPortal Local TX + Jupiter v1 fallback)."""
     if PAPER_MODE:
         log.info(f"[PAPER] Would swap {amount_sol:.4f} SOL: {input_mint[:8]}... -> {output_mint[:8]}...")
         return "PAPER_TX"
-
-    try:
-        # Step 1: Get quote
-        lamports = int(amount_sol * 1_000_000_000)
-        async with session.get(JUPITER_QUOTE, params={
-            "inputMint":        input_mint,
-            "outputMint":       output_mint,
-            "amount":           lamports,
-            "slippageBps":      500,   # 5% slippage
-            "onlyDirectRoutes": "false"
-        }) as resp:
-            if resp.status != 200:
-                log.error(f"Jupiter quote failed: {resp.status}")
-                return None
-            quote = await resp.json()
-
-        # Step 2: Get swap transaction
-        async with session.post(JUPITER_SWAP, json={
-            "quoteResponse":          quote,
-            "userPublicKey":          wallet_pubkey,
-            "wrapAndUnwrapSol":       True,
-            "computeUnitPriceMicroLamports": 200_000,  # priority fee
-        }) as resp:
-            if resp.status != 200:
-                log.error(f"Jupiter swap failed: {resp.status}")
-                return None
-            swap_data = await resp.json()
-
-        # Step 3: Sign and send transaction
-        from solders.keypair import Keypair
-        from solders.transaction import VersionedTransaction
-        from solana.rpc.async_api import AsyncClient
-        import base64
-
-        keypair = Keypair.from_base58_string(private_key_b58)
-        tx_bytes = base64.b64decode(swap_data["swapTransaction"])
-        tx = VersionedTransaction.from_bytes(tx_bytes)
-        signed_tx = keypair.sign_message(bytes(tx.message))
-
-        client = AsyncClient(SOLANA_RPC)
-        result = await client.send_raw_transaction(bytes(tx))
-        await client.close()
-
-        sig = str(result.value)
-        log.info(f"TX sent: https://solscan.io/tx/{sig}")
-        return sig
-
-    except Exception as e:
-        log.error(f"Swap error: {e}")
-        return None
+    cfg = _active_swap_cfg(wallet_pubkey, private_key_b58)
+    if input_mint == SOL_MINT:
+        res = await buy_token_live(session, cfg, output_mint, amount_sol)
+        return res.signature if res.ok else None
+    res = await sell_token_live(session, cfg, input_mint, pct_of_remaining=1.0, is_final_exit=True)
+    return res.signature if res.ok else None
 
 
 # ── BUY ───────────────────────────────────────────────────────────────────────
@@ -327,11 +391,17 @@ async def buy_coin(
     if mint in open_trades:
         return  # already in this trade
 
-    # Cap concurrent active (un-banked) trades for 0.2 SOL bankroll safety (do not liquidate risk-free moonbags!)
+    # Cap concurrent active (un-banked) trades for bankroll safety (do not liquidate risk-free moonbags!)
     active_at_risk = [t for t in open_trades.values() if not t.half_sold and not t.closed]
     if len(active_at_risk) >= MAX_OPEN_TRADES:
         log.warning(f"MAX ACTIVE TRADES ({MAX_OPEN_TRADES}) REACHED | Skipping {name} to preserve cashflow.")
         return
+
+    if not PAPER_MODE:
+        breaker_ok, breaker_msg = _check_daily_loss_breaker()
+        if not breaker_ok:
+            log.warning(f"DAILY LOSS BREAKER | Skipping {name} | {breaker_msg}")
+            return
 
     is_rug, rug_msg = await check_rug_risk(mint, expected_mc=entry_mc)
     if is_rug:
@@ -355,13 +425,15 @@ async def buy_coin(
     news_tag = f" [{buy_source}]" if buy_source else ""
     log.info(f"BUY | {name} | MC ${entry_mc/1000:.1f}k | {invest_amt} SOL{news_tag} | Why: {full_reason} {'[PAPER]' if PAPER_MODE else '[LIVE]'}")
 
-    tx = await execute_swap(
-        session, SOL_MINT, mint,
-        invest_amt, wallet_pubkey, private_key_b58
-    )
-    if tx is None and not PAPER_MODE:
-        log.error(f"Buy failed for {name}")
-        return
+    if not PAPER_MODE:
+        cfg = _active_swap_cfg(wallet_pubkey, private_key_b58)
+        res = await buy_token_live(session, cfg, mint, invest_amt)
+        if not res.ok:
+            log.error(f"LIVE BUY FAILED | {name} | {res.error}")
+            return
+        if res.sol_delta is not None and res.sol_delta < 0:
+            invest_amt = round(abs(res.sol_delta), 6)
+        full_reason = f"{full_reason} | LIVE tx:{(res.signature or '')[:8]}.. ({res.router})"
 
     from paper import open_paper_trade
     open_paper_trade(mint, entry_mc, invest_amt, strategy="APEX", buy_reason=full_reason, buy_source=buy_source)
@@ -381,21 +453,33 @@ async def sell_coin(
     fraction: float,
     reason: str,
     wallet_pubkey: str = "",
-    private_key_b58: str = ""
-):
-    sol_out = trade.sol_invested * fraction * (
-        # In paper mode, calculate the theoretical return based on current MC vs entry
-        1.0  # We'll set this properly in the monitor loop
-    )
-
+    private_key_b58: str = "",
+    pct_of_remaining: Optional[float] = None,
+    is_final_exit: bool = False,
+    is_emergency: bool = False,
+) -> SwapResult:
+    """
+    Sell a position slice:
+      - `fraction`: fraction of INITIAL position (for logging/paper accounting).
+      - `pct_of_remaining`: fraction of CURRENT wallet token balance to sell on-chain
+        (e.g. T1=0.50, T2=0.70 of remaining 50%, T3=0.667 of remaining 15%, final=1.0).
+      - `is_final_exit`: sells 100% of remaining token balance and reclaims empty ATA rent.
+    """
     log.info(f"SELL {int(fraction*100)}% | {trade.name} | Reason: {reason} {'[PAPER]' if PAPER_MODE else '[LIVE]'}")
 
-    if not PAPER_MODE:
-        await execute_swap(
-            session, trade.mint, SOL_MINT,
-            trade.sol_invested * fraction,
-            wallet_pubkey, private_key_b58
-        )
+    if PAPER_MODE:
+        return SwapResult(ok=True, signature="PAPER_TX", router="paper")
+
+    cfg = _active_swap_cfg(wallet_pubkey, private_key_b58)
+    rem_pct = 1.0 if is_final_exit else (pct_of_remaining if pct_of_remaining is not None else fraction)
+    return await sell_token_live(
+        session=session,
+        cfg=cfg,
+        mint=trade.mint,
+        pct_of_remaining=rem_pct,
+        is_final_exit=is_final_exit,
+        is_emergency=is_emergency,
+    )
 
 
 def restore_open_v4_trades():
@@ -427,6 +511,9 @@ def restore_open_v4_trades():
                     half_sold=bool(r[4]),
                     tier2_sold=bool(r[6]),
                     tier3_sold=bool(r[10]),
+                    sold_half_sol=float(r[5] or 0.0),
+                    sold_tier2_sol=float(r[7] or 0.0),
+                    sold_tier3_sol=float(r[11] or 0.0),
                     peak_mult=peak_mc / entry_mc if entry_mc > 0 else 1.0,
                     sol_returned=float(r[5] or 0.0) + float(r[7] or 0.0) + float(r[11] or 0.0),
                 )
@@ -459,19 +546,32 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
                     trade.peak_mult = max(trade.peak_mult, mult)
                     elapsed_secs = time.time() - trade.entry_time
 
-                    # Sync paper trading database in real time with actual current_mc (monitor is source of truth for V4/V5/APEX)
-                    update_paper_trade(mint, current_mc, elapsed_secs=elapsed_secs, from_monitor=True)
+                    # In PAPER mode, paper.py stays the exact source of truth; in LIVE mode we sync confirmed fills below.
+                    if PAPER_MODE:
+                        update_paper_trade(mint, current_mc, elapsed_secs=elapsed_secs, from_monitor=True)
 
                     # ── INITIAL STOP LOSS (0.58x) OR 180s STAGNATION TIME-STOP ──
                     is_failed_breakout = (not trade.half_sold and elapsed_secs >= 180 and mult <= 0.95 and trade.peak_mult < 1.18)
                     if (mult <= STOP_LOSS_AT or is_failed_breakout) and not trade.half_sold:
-                        sol_back = trade.sol_invested * mult
-                        trade.sol_returned += sol_back
-                        trade.closed = True
                         reason_str = "180s stagnation time-stop" if is_failed_breakout else "stop loss"
+                        res = await sell_coin(
+                            session, trade, 1.0, reason_str, wallet_pubkey, private_key_b58,
+                            pct_of_remaining=1.0, is_final_exit=True, is_emergency=(not is_failed_breakout),
+                        )
+                        if not PAPER_MODE and not res.ok:
+                            trade.exit_fail_count += 1
+                            log.error(f"LIVE STOP SELL FAILED ({trade.exit_fail_count}/{MAX_LIVE_EXIT_FAILS}) | {trade.name} | {res.error}")
+                            if trade.exit_fail_count < MAX_LIVE_EXIT_FAILS:
+                                continue
+                            log.error(f"Giving up on illiquid/dead live exit for {trade.name} after {MAX_LIVE_EXIT_FAILS} tries.")
+
+                        sol_back = (res.sol_delta if (not PAPER_MODE and res.sol_delta is not None) else (trade.sol_invested * mult))
+                        trade.sol_returned += max(0.0, sol_back)
+                        trade.closed = True
                         trade.close_reason = f"{reason_str} at {mult:.2f}x"
                         log.info(f"STOP ({reason_str.upper()}) | {trade.name} | {mult:.2f}x | PnL: {trade.pnl:+.4f} SOL")
-                        await sell_coin(session, trade, 1.0, reason_str, wallet_pubkey, private_key_b58)
+                        if not PAPER_MODE:
+                            _sync_live_trade_to_db(trade, current_mc, exit_sol_last=max(0.0, sol_back))
                         to_close.append(mint)
                         # Auto-learn: if instant rug (<= $4.5k or <= 0.25x), blacklist creator + log parent funder
                         if current_mc <= 4_500 or mult <= 0.25:
@@ -480,57 +580,103 @@ async def monitor_loop(wallet_pubkey: str = "", private_key_b58: str = ""):
 
                     tier_triggered = False
 
-                    # ── TIER 1: SELL 50% AT 1.40x (BANKS 70% PRINCIPAL & RAISES FLOOR TO 0.95x) ──
+                    # ── TIER 1: SELL 50% AT 1.40x (50% OF REMAINING -> BANKS 70% PRINCIPAL & RAISES FLOOR TO 0.95x) ──
                     if not trade.half_sold and mult >= TIER1_SELL_AT:
-                        sol_back = (trade.sol_invested * 0.50) * TIER1_SELL_AT
-                        trade.sol_returned += sol_back
-                        trade.half_sold = True
-                        tier_triggered = True
-                        log.info(f"TIER 1 SELL (50%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL")
-                        await sell_coin(session, trade, 0.50, f"Tier 1 (50% at {TIER1_SELL_AT}x)", wallet_pubkey, private_key_b58)
+                        res = await sell_coin(
+                            session, trade, 0.50, f"Tier 1 (50% at {TIER1_SELL_AT}x)", wallet_pubkey, private_key_b58,
+                            pct_of_remaining=0.50, is_final_exit=False,
+                        )
+                        if res.ok:
+                            sol_back = max(0.0, res.sol_delta if (not PAPER_MODE and res.sol_delta is not None) else ((trade.sol_invested * 0.50) * TIER1_SELL_AT))
+                            trade.sold_half_sol = sol_back
+                            trade.sol_returned += sol_back
+                            trade.half_sold = True
+                            tier_triggered = True
+                            log.info(f"TIER 1 SELL (50%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL")
+                        else:
+                            log.error(f"LIVE TIER 1 SELL FAILED | {trade.name} | {res.error}")
 
-                    # ── TIER 2: SELL 35% AT 1.75x (LOCKS +31.25% CASH + 15% REMAINING) ──
+                    # ── TIER 2: SELL 35% AT 1.75x (70% OF REMAINING 50% -> LOCKS +31.25% CASH + 15% REMAINING) ──
                     if trade.half_sold and not trade.tier2_sold and mult >= TIER2_SELL_AT:
-                        sol_back = (trade.sol_invested * 0.35) * TIER2_SELL_AT
-                        trade.sol_returned += sol_back
-                        trade.tier2_sold = True
-                        tier_triggered = True
-                        log.info(f"TIER 2 SELL (35%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (Total Returned: {trade.sol_returned:.4f} SOL)")
-                        await sell_coin(session, trade, 0.35, f"Tier 2 (35% at {TIER2_SELL_AT}x)", wallet_pubkey, private_key_b58)
+                        res = await sell_coin(
+                            session, trade, 0.35, f"Tier 2 (35% at {TIER2_SELL_AT}x)", wallet_pubkey, private_key_b58,
+                            pct_of_remaining=0.70, is_final_exit=False,
+                        )
+                        if res.ok:
+                            sol_back = max(0.0, res.sol_delta if (not PAPER_MODE and res.sol_delta is not None) else ((trade.sol_invested * 0.35) * TIER2_SELL_AT))
+                            trade.sold_tier2_sol = sol_back
+                            trade.sol_returned += sol_back
+                            trade.tier2_sold = True
+                            tier_triggered = True
+                            log.info(f"TIER 2 SELL (35%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (Total Returned: {trade.sol_returned:.4f} SOL)")
+                        else:
+                            log.error(f"LIVE TIER 2 SELL FAILED | {trade.name} | {res.error}")
 
-                    # ── TIER 3: SELL 10% AT 2.50x (LOCKS +56.25% CASH + 5% MOONBAG!) ──
+                    # ── TIER 3: SELL 10% AT 2.50x (66.7% OF REMAINING 15% -> LOCKS +56.25% CASH + 5% MOONBAG!) ──
                     if trade.tier2_sold and not trade.tier3_sold and mult >= TIER3_SELL_AT:
-                        sol_back = (trade.sol_invested * 0.10) * TIER3_SELL_AT
-                        trade.sol_returned += sol_back
-                        trade.tier3_sold = True
-                        tier_triggered = True
-                        log.info(f"TIER 3 SELL (10%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (Total Returned: {trade.sol_returned:.4f} SOL)")
-                        await sell_coin(session, trade, 0.10, f"Tier 3 (10% at {TIER3_SELL_AT}x)", wallet_pubkey, private_key_b58)
+                        res = await sell_coin(
+                            session, trade, 0.10, f"Tier 3 (10% at {TIER3_SELL_AT}x)", wallet_pubkey, private_key_b58,
+                            pct_of_remaining=(2.0 / 3.0), is_final_exit=False,
+                        )
+                        if res.ok:
+                            sol_back = max(0.0, res.sol_delta if (not PAPER_MODE and res.sol_delta is not None) else ((trade.sol_invested * 0.10) * TIER3_SELL_AT))
+                            trade.sold_tier3_sol = sol_back
+                            trade.sol_returned += sol_back
+                            trade.tier3_sold = True
+                            tier_triggered = True
+                            log.info(f"TIER 3 SELL (10%) | {trade.name} | {mult:.2f}x | Banked {sol_back:.4f} SOL (Total Returned: {trade.sol_returned:.4f} SOL)")
+                        else:
+                            log.error(f"LIVE TIER 3 SELL FAILED | {trade.name} | {res.error}")
 
                     # ── TRAILING STOP LOSS (5% MOONBAG / 15% POST-T2 / 50% POST-T1) ──────────
                     if trade.half_sold and mult <= max(0.95, trade.peak_mult * (1.0 - TRAILING_STOP_PCT)):
                         rem_fraction = 0.05 if trade.tier3_sold else (0.15 if trade.tier2_sold else 0.50)
-                        sol_back = (trade.sol_invested * rem_fraction) * mult
-                        trade.sol_returned += sol_back
+                        res = await sell_coin(
+                            session, trade, rem_fraction, "trailing stop exit", wallet_pubkey, private_key_b58,
+                            pct_of_remaining=1.0, is_final_exit=True, is_emergency=(mult < 0.70),
+                        )
+                        if not PAPER_MODE and not res.ok:
+                            trade.exit_fail_count += 1
+                            log.error(f"LIVE TRAILING EXIT FAILED ({trade.exit_fail_count}/{MAX_LIVE_EXIT_FAILS}) | {trade.name} | {res.error}")
+                            if trade.exit_fail_count < MAX_LIVE_EXIT_FAILS:
+                                continue
+
+                        sol_back = (res.sol_delta if (not PAPER_MODE and res.sol_delta is not None) else ((trade.sol_invested * rem_fraction) * mult))
+                        trade.sol_returned += max(0.0, sol_back)
                         trade.closed = True
                         trade.close_reason = f"Trailing stop at {mult:.2f}x (Peak: {trade.peak_mult:.2f}x)"
                         log.info(f"TRAILING STOP ({rem_fraction*100:.1f}%) | {trade.name} | {mult:.2f}x | Final PnL: {trade.pnl:+.4f} SOL")
-                        await sell_coin(session, trade, rem_fraction, "trailing stop exit", wallet_pubkey, private_key_b58)
+                        if not PAPER_MODE:
+                            _sync_live_trade_to_db(trade, current_mc, exit_sol_last=max(0.0, sol_back))
                         to_close.append(mint)
 
                     # ── 24HR MOONBAG EXIT ─────────────────────────────────────
                     elif trade.elapsed_hrs >= MOONBAG_EXIT_HRS:
                         rem_fraction = 0.05 if trade.tier3_sold else (0.15 if trade.tier2_sold else (0.50 if trade.half_sold else 1.0))
-                        sol_back = (trade.sol_invested * rem_fraction) * mult
-                        trade.sol_returned += sol_back
+                        res = await sell_coin(
+                            session, trade, rem_fraction, "24hr moonbag", wallet_pubkey, private_key_b58,
+                            pct_of_remaining=1.0, is_final_exit=True,
+                        )
+                        if not PAPER_MODE and not res.ok:
+                            trade.exit_fail_count += 1
+                            log.error(f"LIVE 24HR EXIT FAILED ({trade.exit_fail_count}/{MAX_LIVE_EXIT_FAILS}) | {trade.name} | {res.error}")
+                            if trade.exit_fail_count < MAX_LIVE_EXIT_FAILS:
+                                continue
+
+                        sol_back = (res.sol_delta if (not PAPER_MODE and res.sol_delta is not None) else ((trade.sol_invested * rem_fraction) * mult))
+                        trade.sol_returned += max(0.0, sol_back)
                         trade.closed = True
                         trade.close_reason = f"24hr exit at {mult:.2f}x"
                         log.info(f"24HR EXIT | {trade.name} | {mult:.2f}x | Final PnL: {trade.pnl:+.4f} SOL")
-                        await sell_coin(session, trade, rem_fraction, "24hr moonbag", wallet_pubkey, private_key_b58)
+                        if not PAPER_MODE:
+                            _sync_live_trade_to_db(trade, current_mc, exit_sol_last=max(0.0, sol_back))
                         to_close.append(mint)
 
-                    elif not tier_triggered:
-                        log.info(f"WATCHING  | {trade.name} | {mult:.2f}x | {trade.elapsed_hrs:.1f}hr elapsed")
+                    else:
+                        if not PAPER_MODE:
+                            _sync_live_trade_to_db(trade, current_mc)
+                        if not tier_triggered:
+                            log.info(f"WATCHING  | {trade.name} | {mult:.2f}x | {trade.elapsed_hrs:.1f}hr elapsed")
 
                 # Move closed trades out
                 for mint in to_close:
